@@ -1,0 +1,8 @@
+[
+  {
+    "name": "GM/T 0002 encrypt vector",
+    "key": "0123456789abcdeffedcba9876543210",
+    "plaintext": "0123456789abcdeffedcba9876543210",
+    "ciphertext": "681EDF34D206965E86B3E94F536E4246"
+  }
+]

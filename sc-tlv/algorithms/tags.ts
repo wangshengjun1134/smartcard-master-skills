@@ -1,0 +1,61 @@
+// sc-tlv — optional EMV/BER tag name dictionary.
+// This is PURE METADATA. The TLV parser never depends on it; it is only used
+// to attach a human-readable `name` to nodes in pretty output.
+
+const EMV_TAGS: Record<string, string> = {
+  "6F": "FCI (File Control Information) Template",
+  "84": "DF Name (AID)",
+  "A5": "FCI Proprietary Template",
+  "4F": "Application Identifier (AID)",
+  "50": "Application Label",
+  "57": "Track 2 Equivalent Data",
+  "5A": "Application Primary Account Number (PAN)",
+  "5F20": "Cardholder Name",
+  "5F24": "Application Expiration Date",
+  "5F25": "Application Effective Date",
+  "5F28": "Issuer Country Code",
+  "5F30": "Service Code",
+  "70": "READ RECORD Response Message Template",
+  "77": "Response Message Template Format 2",
+  "80": "Response Message Template Format 1",
+  "82": "Application Interchange Profile (AIP)",
+  "83": "Command Template",
+  "88": "Short File Identifier (SFI)",
+  "8A": "Authorisation Response Code",
+  "8C": "Card Risk Management Data Object List 1 (CDOL1)",
+  "8D": "Card Risk Management Data Object List 2 (CDOL2)",
+  "8E": "Cardholder Verification Method (CVM) List",
+  "8F": "Certification Authority Public Key Index",
+  "90": "Issuer Public Key Certificate",
+  "92": "Issuer Public Key Remainder",
+  "93": "Signed Static Application Data",
+  "94": "Application File Locator (AFL)",
+  "9F02": "Amount, Authorised",
+  "9F03": "Amount, Other",
+  "9F06": "Application Identifier (AID) Terminal",
+  "9F08": "Application Version Number (Terminal)",
+  "9F09": "Application Version Number (ICC)",
+  "9F0D": "Issuer Action Code - Default",
+  "9F0E": "Issuer Action Code - Denial",
+  "9F0F": "Issuer Action Code - Online",
+  "9F10": "Issuer Application Data",
+  "9F11": "Issuer Code Table Index",
+  "9F12": "Application Preferred Name",
+  "9F1A": "Terminal Country Code",
+  "9F1E": "Interface Device (IFD) Serial Number",
+  "9F26": "Application Cryptogram (AC)",
+  "9F27": "Cryptogram Information Data (CID)",
+  "9F32": "Issuer Public Key Exponent",
+  "9F34": "Cardholder Verification Method (CVM) Results",
+  "9F36": "Application Transaction Counter (ATC)",
+  "9F37": "Unpredictable Number (UN)",
+  "9F38": "Processing Options Data Object List (PDOL)",
+  "9F45": "Data Authentication Code",
+  "9F4A": "Static Data Authentication Tag List",
+  "9F79": "Amount, Reference Currency",
+};
+
+export function tagName(hex: string): string | undefined {
+  const t = hex.toUpperCase();
+  return EMV_TAGS[t];
+}

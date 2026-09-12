@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-signature/schema.json",
+  "title": "sc-signature input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "algorithm"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["sign", "verify", "generate"]
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": ["RSA", "RSA-PSS", "ECDSA", "SM2", "EdDSA"]
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Message as HEX. Required for sign and verify."
+    },
+    "private_key": {
+      "type": "string",
+      "description": "PEM encoded private key. Required for sign."
+    },
+    "public_key": {
+      "type": "string",
+      "description": "PEM encoded public key. Required for verify."
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Signature as HEX. Required for verify."
+    },
+    "hash": {
+      "type": "string",
+      "enum": ["SHA-224", "SHA-256", "SHA-384", "SHA-512", "SM3"],
+      "description": "Required for RSA/RSA-PSS/ECDSA. Forbidden for EdDSA."
+    },
+    "curve": {
+      "type": "string",
+      "enum": ["P-256", "P-384", "P-521", "secp256k1", "Ed25519", "Ed448"]
+    },
+    "salt_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "RSA-PSS salt length in bytes."
+    },
+    "signature_encoding": {
+      "type": "string",
+      "enum": ["der", "raw"],
+      "default": "der"
+    },
+    "sm2_id": {
+      "type": "string",
+      "default": "1234567812345678",
+      "description": "SM2 user identifier (ASCII, or 'hex:' prefixed bytes)."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "sign" } }, "required": ["operation"] },
+      "then": { "required": ["data", "private_key"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "verify" } }, "required": ["operation"] },
+      "then": { "required": ["data", "public_key", "signature"] }
+    },
+    {
+      "if": {
+        "anyOf": [
+          { "properties": { "algorithm": { "const": "RSA" } }, "required": ["algorithm"] },
+          { "properties": { "algorithm": { "const": "RSA-PSS" } }, "required": ["algorithm"] },
+          { "properties": { "algorithm": { "const": "ECDSA" } }, "required": ["algorithm"] }
+        ]
+      },
+      "then": { "required": ["hash"] }
+    },
+    {
+      "if": { "properties": { "algorithm": { "const": "EdDSA" } }, "required": ["algorithm"] },
+      "then": { "not": { "required": ["hash"] } }
+    }
+  ]
+}

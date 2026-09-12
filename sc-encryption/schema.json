@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.local/schemas/sc-encryption.json",
+  "title": "sc-encryption input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "algorithm", "mode", "key", "data"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["encrypt", "decrypt"],
+      "description": "encrypt or decrypt"
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": ["AES-128", "AES-192", "AES-256", "3DES", "3DES-2KEY", "SM4"],
+      "description": "Cipher algorithm"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["ECB", "CBC", "CTR", "GCM"],
+      "description": "Cipher mode"
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Key as uppercase/lowercase hex"
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Plaintext (encrypt) or ciphertext (decrypt) as hex"
+    },
+    "iv": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Initialization vector / counter block for CBC and CTR (hex)"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Nonce for GCM (hex), default length 12"
+    },
+    "aad": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Additional authenticated data for GCM (hex)"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Authentication tag for GCM decrypt (hex)"
+    },
+    "tag_length": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 16,
+      "description": "GCM authentication tag length in bytes (encrypt only, default 16)"
+    },
+    "padding": {
+      "type": "string",
+      "enum": ["none", "pkcs7", "iso7816-4", "iso9797-1-m1", "iso9797-1-m2"],
+      "description": "Padding scheme for ECB/CBC (default pkcs7). Not accepted for CTR/GCM."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "CBC" } } },
+      "then": { "required": ["iv"] }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "CTR" } } },
+      "then": { "required": ["iv"] }
+    },
+    {
+      "if": { "properties": { "mode": { "const": "GCM" } } },
+      "then": { "required": ["nonce"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": { "const": "GCM" },
+          "operation": { "const": "decrypt" }
+        },
+        "required": ["mode", "operation"]
+      },
+      "then": { "required": ["tag"] }
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-checksum/schema.json",
+  "title": "sc-checksum input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "algorithm", "data"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["compute", "checksum", "verify", "validate"]
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": [
+        "CRC-8",
+        "CRC-8/MAXIM",
+        "CRC-16/CCITT-FALSE",
+        "CRC-16/IBM",
+        "CRC-16/XMODEM",
+        "CRC-32",
+        "CRC-32C",
+        "LRC",
+        "XOR",
+        "SUM-8",
+        "SUM-16"
+      ]
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Input bytes as HEX."
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Expected checksum as HEX. Required for verify."
+    },
+    "init": {
+      "type": "integer",
+      "description": "Override the initial value."
+    },
+    "xorout": {
+      "type": "integer",
+      "description": "Override the final XOR value."
+    },
+    "poly": {
+      "type": "integer",
+      "description": "Override the polynomial (CRC algorithms only)."
+    },
+    "endian": {
+      "type": "string",
+      "enum": ["big", "little"],
+      "default": "big",
+      "description": "Byte order for multi-byte output."
+    }
+  },
+  "if": {
+    "properties": { "operation": { "enum": ["verify", "validate"] } },
+    "required": ["operation"]
+  },
+  "then": {
+    "required": ["checksum"]
+  }
+}

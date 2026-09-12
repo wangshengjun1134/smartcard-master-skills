@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-bitfield/schema.json",
+  "title": "sc-bitfield input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "data"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["get", "set", "extract", "insert", "mask", "shift", "count", "reverse", "msb", "lsb"]
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Input bytes as HEX."
+    },
+    "bit_offset": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Start bit index. Required for get/set/extract/insert."
+    },
+    "bit_length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Field width in bits. Required for get/set/extract/insert."
+    },
+    "value": {
+      "description": "Value to write: integer, decimal string, or HEX string."
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["left", "right"],
+      "default": "left"
+    },
+    "shift": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mask": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Mask bytes as HEX; length must equal data length."
+    },
+    "bit_order": {
+      "type": "string",
+      "enum": ["msb", "lsb"],
+      "default": "msb"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "operation": { "enum": ["get", "set", "extract", "insert"] } },
+        "required": ["operation"]
+      },
+      "then": { "required": ["bit_offset", "bit_length"] }
+    },
+    {
+      "if": {
+        "properties": { "operation": { "enum": ["set", "insert"] } },
+        "required": ["operation"]
+      },
+      "then": { "required": ["value"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "shift" } }, "required": ["operation"] },
+      "then": { "required": ["shift"] }
+    }
+  ]
+}

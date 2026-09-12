@@ -1,0 +1,7 @@
+{
+  "name": "sc-padding",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Padding / unpadding / validation for smart-card and MAC block schemes."
+}

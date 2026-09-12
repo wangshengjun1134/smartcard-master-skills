@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-random/schema.json",
+  "title": "sc-random input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["generate", "nonce", "challenge", "uuid"]
+    },
+    "length": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536,
+      "description": "Bytes per value. Defaults: generate 16, nonce 12, challenge 8."
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1024,
+      "default": 1
+    },
+    "format": {
+      "type": "string",
+      "enum": ["hex", "base64", "dec", "bin"],
+      "default": "hex"
+    }
+  }
+}

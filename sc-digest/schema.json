@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-digest/schema.json",
+  "title": "sc-digest input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["hash", "list"]
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": [
+        "MD5",
+        "SHA-1",
+        "SHA-224",
+        "SHA-256",
+        "SHA-384",
+        "SHA-512",
+        "SHA-512/224",
+        "SHA-512/256",
+        "SHA3-224",
+        "SHA3-256",
+        "SHA3-384",
+        "SHA3-512",
+        "SM3"
+      ]
+    },
+    "data": {
+      "type": "string",
+      "description": "Message to hash. Interpretation depends on 'encoding'."
+    },
+    "encoding": {
+      "type": "string",
+      "enum": ["hex", "utf8", "ascii", "base64"],
+      "default": "hex",
+      "description": "How 'data' is decoded before hashing. Output is always HEX."
+    }
+  },
+  "if": {
+    "properties": { "operation": { "const": "hash" } },
+    "required": ["operation"]
+  },
+  "then": {
+    "required": ["algorithm", "data"]
+  }
+}

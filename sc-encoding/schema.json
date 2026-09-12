@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard.tools/schemas/sc-encoding.json",
+  "title": "sc-encoding input",
+  "type": "object",
+  "required": ["operation", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["encode", "decode", "convert"],
+      "description": "encode = hex -> encoding; decode = encoding -> hex; convert = from -> to"
+    },
+    "data": {
+      "type": "string",
+      "description": "input value (hex, text, decimal, binary, bcd or tbcd string per operation)"
+    },
+    "from": {
+      "type": "string",
+      "enum": ["hex", "ascii", "utf8", "utf-8", "latin1", "base64", "base64url", "bcd", "bcd-tbcd", "integer", "binary"],
+      "description": "source representation (convert only)"
+    },
+    "to": {
+      "type": "string",
+      "enum": ["hex", "ascii", "utf8", "utf-8", "latin1", "base64", "base64url", "bcd", "bcd-tbcd", "integer", "binary"],
+      "description": "target representation (convert only)"
+    },
+    "encoding": {
+      "type": "string",
+      "enum": ["hex", "ascii", "utf8", "utf-8", "latin1", "base64", "base64url", "bcd", "bcd-tbcd", "integer", "binary"],
+      "description": "representation for encode (target) / decode (source)"
+    },
+    "length": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "fixed byte length for integer / bcd output"
+    },
+    "endian": {
+      "type": "string",
+      "enum": ["big", "little"],
+      "description": "byte order for integer (default big)"
+    },
+    "bcd_padding": {
+      "type": "string",
+      "enum": ["left", "right"],
+      "description": "padding side for odd-length BCD (default right)"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "convert" } } },
+      "then": { "required": ["from", "to"] }
+    },
+    {
+      "if": { "properties": { "operation": { "enum": ["encode", "decode"] } } },
+      "then": { "required": ["encoding"] }
+    }
+  ]
+}

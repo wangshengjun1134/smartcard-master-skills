@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-padding/schema.json",
+  "title": "sc-padding input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "algorithm", "data", "block_size"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["pad", "unpad", "validate"]
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": ["ISO7816-4", "ISO9797-1-M1", "ISO9797-1-M2", "PKCS7", "ANSI-X9.23", "ZERO"]
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Input bytes as HEX."
+    },
+    "block_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255,
+      "description": "Block size in bytes. Required for all schemes."
+    }
+  }
+}

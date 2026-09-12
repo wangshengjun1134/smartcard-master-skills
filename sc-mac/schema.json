@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard-skills.dev/sc-mac/schema.json",
+  "title": "sc-mac input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["operation", "algorithm", "key", "data"],
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["mac", "verify"],
+      "description": "MAC computation or verification."
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": [
+        "HMAC-MD5",
+        "HMAC-SHA1",
+        "HMAC-SHA224",
+        "HMAC-SHA256",
+        "HMAC-SHA384",
+        "HMAC-SHA512",
+        "HMAC-SM3",
+        "AES-CMAC",
+        "3DES-CMAC",
+        "3DES-MAC",
+        "ISO9797-1-M1-MAC",
+        "ISO9797-1-M2-MAC",
+        "ISO9797-1-M3-MAC",
+        "SM4-MAC"
+      ]
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "MAC key as HEX. AES 16/24/32 bytes, 3DES 16/24 bytes, SM4 16 bytes."
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Message as HEX. Empty string means an empty message."
+    },
+    "cipher": {
+      "type": "string",
+      "enum": ["AES", "3DES", "SM4"],
+      "default": "3DES",
+      "description": "Underlying block cipher, ISO9797 algorithms only."
+    },
+    "iv": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "CBC-MAC initial vector as HEX. Defaults to all-zero."
+    },
+    "mac_length": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Truncate the MAC to this many bytes, taken from the left."
+    },
+    "expected": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "Expected MAC as HEX. Required when operation is 'verify'."
+    }
+  },
+  "if": {
+    "properties": { "operation": { "const": "verify" } },
+    "required": ["operation"]
+  },
+  "then": {
+    "required": ["expected"]
+  }
+}

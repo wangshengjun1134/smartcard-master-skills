@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcard.tools/schemas/sc-tlv.json",
+  "title": "sc-tlv input",
+  "type": "object",
+  "required": ["operation"],
+  "additionalProperties": false,
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": ["parse", "encode", "find", "set", "delete", "flatten"],
+      "description": "TLV operation to perform"
+    },
+    "data": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "hex TLV bytes (parse/find/set/delete/flatten)"
+    },
+    "items": {
+      "type": "array",
+      "description": "encode input; nodes: {tag, value} or {tag, children:[...]}"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "target tag (hex) for find/set/delete"
+    },
+    "value": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$",
+      "description": "new value (hex) for set"
+    },
+    "format": {
+      "type": "string",
+      "enum": ["ber", "simple", "raw"],
+      "description": "TLV format (default ber)"
+    },
+    "pretty": {
+      "type": "boolean",
+      "description": "attach tag names and a text tree on parse"
+    },
+    "preserve_order": {
+      "type": "boolean",
+      "description": "keep original order (default true)"
+    },
+    "tag_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "RAW format tag byte count"
+    },
+    "length_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "RAW format length byte count"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "encode" } } },
+      "then": { "required": ["items"] }
+    },
+    {
+      "if": { "properties": { "operation": { "enum": ["parse", "find", "set", "delete", "flatten"] } } },
+      "then": { "required": ["data"] }
+    },
+    {
+      "if": { "properties": { "operation": { "enum": ["find", "set", "delete"] } } },
+      "then": { "required": ["tag"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "set" } } },
+      "then": { "required": ["value"] }
+    }
+  ]
+}

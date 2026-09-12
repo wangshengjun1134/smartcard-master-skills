@@ -1,0 +1,20 @@
+[
+  {
+    "name": "RFC4493 Example1 empty",
+    "key": "2b7e151628aed2a6abf7158809cf4f3c",
+    "data": "",
+    "mac": "BB1D6929E95937287FA37D129B756746"
+  },
+  {
+    "name": "RFC4493 Example2 16-byte",
+    "key": "2b7e151628aed2a6abf7158809cf4f3c",
+    "data": "6bc1bee22e409f96e93d7e117393172a",
+    "mac": "070A16B46B4D4144F79BDD9DD04A287C"
+  },
+  {
+    "name": "RFC4493 Example3 40-byte",
+    "key": "2b7e151628aed2a6abf7158809cf4f3c",
+    "data": "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411",
+    "mac": "DFA66747DE9AE63030CA32611497C827"
+  }
+]

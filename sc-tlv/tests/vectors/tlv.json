@@ -1,0 +1,83 @@
+{
+  "vectors": [
+    {
+      "name": "parse nested BER",
+      "input": { "operation": "parse", "data": "6F15A5138408A0000000030000009F0206000000001000" },
+      "expect": { "tree": [{ "tag": "6F", "length": 21, "value": "A5138408A0000000030000009F0206000000001000", "constructed": true, "children": [{ "tag": "A5", "length": 19, "value": "8408A0000000030000009F0206000000001000", "constructed": true, "children": [{ "tag": "84", "length": 8, "value": "A000000003000000", "constructed": false, "children": [] }, { "tag": "9F02", "length": 6, "value": "000000001000", "constructed": false, "children": [] }] }] }] }
+    },
+    {
+      "name": "parse single primitive",
+      "input": { "operation": "parse", "data": "8408A000000003000000" },
+      "expect": { "tree": [{ "tag": "84", "length": 8, "value": "A000000003000000", "constructed": false, "children": [] }] }
+    },
+    {
+      "name": "parse multi-byte tag 9F02",
+      "input": { "operation": "parse", "data": "9F0206000000001000" },
+      "expect": { "tree": [{ "tag": "9F02", "length": 6, "value": "000000001000", "constructed": false, "children": [] }] }
+    },
+    {
+      "name": "parse SIMPLE nested",
+      "input": { "operation": "parse", "data": "21050103AABBCC", "format": "simple" },
+      "expect": { "tree": [{ "tag": "21", "length": 5, "value": "0103AABBCC", "constructed": true, "children": [{ "tag": "01", "length": 3, "value": "AABBCC", "constructed": false, "children": [] }] }] }
+    },
+    {
+      "name": "parse RAW",
+      "input": { "operation": "parse", "data": "12340003AABBCC", "format": "raw", "tag_bytes": 2, "length_bytes": 2 },
+      "expect": { "tree": [{ "tag": "1234", "length": 3, "value": "AABBCC", "constructed": false, "children": [] }] }
+    },
+    {
+      "name": "find hit",
+      "input": { "operation": "find", "data": "6F15A5138408A0000000030000009F0206000000001000", "tag": "9F02" },
+      "expect": { "found": true, "value": "000000001000", "path": "6F/A5/9F02", "tag": "9F02" }
+    },
+    {
+      "name": "find miss",
+      "input": { "operation": "find", "data": "8408A000000003000000", "tag": "9F02" },
+      "expect": { "found": false, "value": "", "path": "", "tag": "9F02" }
+    },
+    {
+      "name": "flatten",
+      "input": { "operation": "flatten", "data": "6F15A5138408A0000000030000009F0206000000001000" },
+      "expect": { "items": [{ "path": "6F/A5/84", "tag": "84", "value": "A000000003000000" }, { "path": "6F/A5/9F02", "tag": "9F02", "value": "000000001000" }] }
+    },
+    {
+      "name": "encode flat",
+      "input": { "operation": "encode", "items": [{ "tag": "84", "value": "A000000003000000" }, { "tag": "9F02", "value": "000000001000" }] },
+      "expect": { "data": "8408A0000000030000009F0206000000001000" }
+    },
+    {
+      "name": "encode nested",
+      "input": { "operation": "encode", "items": [{ "tag": "6F", "children": [{ "tag": "84", "value": "A000000003000000" }] }] },
+      "expect": { "data": "6F0A8408A000000003000000" }
+    },
+    {
+      "name": "set replace",
+      "input": { "operation": "set", "data": "8408A000000003000000", "tag": "84", "value": "BBBBBBBBBBBBBBBB" },
+      "expect": { "data": "8408BBBBBBBBBBBBBBBB" }
+    },
+    {
+      "name": "set append",
+      "input": { "operation": "set", "data": "8408A000000003000000", "tag": "9F02", "value": "000000001000" },
+      "expect": { "data": "8408A0000000030000009F0206000000001000" }
+    },
+    {
+      "name": "delete present",
+      "input": { "operation": "delete", "data": "8408A0000000030000009F0206000000001000", "tag": "9F02" },
+      "expect": { "data": "8408A000000003000000" }
+    },
+    {
+      "name": "delete missing (unchanged)",
+      "input": { "operation": "delete", "data": "8408A000000003000000", "tag": "9F02" },
+      "expect": { "data": "8408A000000003000000" }
+    },
+
+    { "name": "error invalid hex", "input": { "operation": "parse", "data": "ZZ" }, "error": "INVALID_HEX" },
+    { "name": "error odd hex", "input": { "operation": "parse", "data": "6F0" }, "error": "INVALID_HEX" },
+    { "name": "error reserved 0xFF length", "input": { "operation": "parse", "data": "6FFF" }, "error": "MALFORMED_TLV" },
+    { "name": "error indefinite 0x80", "input": { "operation": "parse", "data": "6F80" }, "error": "UNSUPPORTED_LENGTH_FORM" },
+    { "name": "error long-form n>4", "input": { "operation": "parse", "data": "6F850102030405" }, "error": "MALFORMED_TLV" },
+    { "name": "error truncated", "input": { "operation": "parse", "data": "6F0A8408A000" }, "error": "MALFORMED_TLV" },
+    { "name": "error trailing bytes", "input": { "operation": "parse", "data": "8408A000000003000000FF" }, "error": "MALFORMED_TLV" },
+    { "name": "error unknown format", "input": { "operation": "parse", "data": "8408A000000003000000", "format": "foo" }, "error": "UNSUPPORTED_PARAMETER" }
+  ]
+}

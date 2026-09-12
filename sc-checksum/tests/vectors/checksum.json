@@ -1,0 +1,74 @@
+[
+  {
+    "name": "CRC-32 check value",
+    "algorithm": "CRC-32",
+    "data": "313233343536373839",
+    "checksum": "CBF43926"
+  },
+  {
+    "name": "CRC-32C check value",
+    "algorithm": "CRC-32C",
+    "data": "313233343536373839",
+    "checksum": "E3069283"
+  },
+  {
+    "name": "CRC-16/CCITT-FALSE check value",
+    "algorithm": "CRC-16/CCITT-FALSE",
+    "data": "313233343536373839",
+    "checksum": "29B1"
+  },
+  {
+    "name": "CRC-16/IBM check value",
+    "algorithm": "CRC-16/IBM",
+    "data": "313233343536373839",
+    "checksum": "BB3D"
+  },
+  {
+    "name": "CRC-16/XMODEM check value",
+    "algorithm": "CRC-16/XMODEM",
+    "data": "313233343536373839",
+    "checksum": "31C3"
+  },
+  {
+    "name": "CRC-8 check value",
+    "algorithm": "CRC-8",
+    "data": "313233343536373839",
+    "checksum": "F4"
+  },
+  {
+    "name": "CRC-8/MAXIM check value",
+    "algorithm": "CRC-8/MAXIM",
+    "data": "313233343536373839",
+    "checksum": "A1"
+  },
+  {
+    "name": "CRC-32 empty input",
+    "algorithm": "CRC-32",
+    "data": "",
+    "checksum": "00000000"
+  },
+  {
+    "name": "LRC: two's complement of 8-bit sum (ISO 1155)",
+    "algorithm": "LRC",
+    "data": "313233343536373839",
+    "checksum": "23"
+  },
+  {
+    "name": "XOR: byte-wise XOR of all bytes",
+    "algorithm": "XOR",
+    "data": "313233343536373839",
+    "checksum": "31"
+  },
+  {
+    "name": "SUM-8: sum mod 256",
+    "algorithm": "SUM-8",
+    "data": "313233343536373839",
+    "checksum": "DD"
+  },
+  {
+    "name": "SUM-16: sum mod 65536",
+    "algorithm": "SUM-16",
+    "data": "313233343536373839",
+    "checksum": "01DD"
+  }
+]

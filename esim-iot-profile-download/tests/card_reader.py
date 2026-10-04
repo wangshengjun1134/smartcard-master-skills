@@ -136,15 +136,29 @@ class CardReader:
             raise CardError("Not connected to card. Call connect() first.")
         
         try:
-            # 构建 APDU (pyscard 2.x 接受 list of int 或 bytes)
-            if data:
-                apdu = bytes([cla, ins, p1, p2, len(data)] + list(data))
-                if le is not None:
-                    apdu += bytes([le])
+            # 构建 APDU
+            # 对于 T0 协议，MANAGE_CHANNEL 需要特殊处理
+            if cla == 0x00 and ins == 0x70:
+                # MANAGE_CHANNEL: 00 70 P1 P2 [Lc] Data
+                # T0 协议下，如果只有 1 字节数据，格式为: 00 70 P1 P2 01 Data
+                if data and len(data) == 1 and le is None:
+                    apdu = bytes([cla, ins, p1, p2, 0x01, data[0]])
+                else:
+                    apdu = bytes([cla, ins, p1, p2])
+                    if data:
+                        apdu += bytes([len(data)]) + data
+                    if le is not None:
+                        apdu += bytes([le])
             else:
-                apdu = bytes([cla, ins, p1, p2])
-                if le is not None:
-                    apdu += bytes([le])
+                # 普通 APDU
+                if data:
+                    apdu = bytes([cla, ins, p1, p2, len(data)] + list(data))
+                    if le is not None:
+                        apdu += bytes([le])
+                else:
+                    apdu = bytes([cla, ins, p1, p2])
+                    if le is not None:
+                        apdu += bytes([le])
             
             logger.debug(f"TX: {apdu.hex().upper()}")
             

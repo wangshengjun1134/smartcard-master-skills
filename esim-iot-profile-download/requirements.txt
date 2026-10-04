@@ -1,0 +1,4 @@
+cryptography>=42.0.0
+pyasn1>=0.6.0
+pydantic>=2.0.0
+pyscard>=2.2.0

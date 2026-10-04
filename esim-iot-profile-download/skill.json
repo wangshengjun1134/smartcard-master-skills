@@ -1,0 +1,12 @@
+{
+  "skillId": "esim-iot-profile-download",
+  "version": "1.0.0",
+  "name": "eSIM IoT Profile Download",
+  "description": "IoT eSIM Profile 下载和启用 Skill（本地 SM-DP+ 实现）",
+  "category": "custom",
+  "runtime": {
+    "type": "python",
+    "version": "3.10+"
+  },
+  "entry": "main.py"
+}

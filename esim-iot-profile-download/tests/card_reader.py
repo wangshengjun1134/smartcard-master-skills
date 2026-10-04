@@ -85,7 +85,7 @@ class CardReader:
         连接智能卡
         
         Args:
-            protocol: 协议类型 (CardConnection.T0Protocol, CardConnection.T1Protocol, CardConnection.RAWProtocol)
+            protocol: 协议类型 (CardConnection.T0_protocol, CardConnection.T1_protocol, CardConnection.RAW_protocol)
         """
         try:
             if self.is_connected():
@@ -97,15 +97,10 @@ class CardReader:
             if protocol:
                 self.connection.connect(protocol)
             else:
-                # 优先使用 T1 协议（更稳定）
-                try:
-                    from smartcard.CardConnection import CardConnection
-                    self.connection.connect(CardConnection.T1Protocol)
-                    logger.info("Connected using T1 protocol")
-                except Exception:
-                    # 回退到自动选择
-                    self.connection.connect()
-                    logger.info("Connected using auto protocol")
+                # 使用 T0 协议（与 Java版本一致）
+                from smartcard.CardConnection import CardConnection
+                self.connection.connect(CardConnection.T0_protocol)
+                logger.info("Connected using T0 protocol")
             
             logger.info(f"Connected to card: {self.connection.getATR()}")
         
@@ -141,20 +136,20 @@ class CardReader:
             raise CardError("Not connected to card. Call connect() first.")
         
         try:
-            # 构建 APDU
-            apdu = [cla, ins, p1, p2]
-            
+            # 构建 APDU (pyscard 2.x 接受 list of int 或 bytes)
             if data:
-                apdu.append(len(data))
-                apdu.extend(data)
+                apdu = bytes([cla, ins, p1, p2, len(data)] + list(data))
+                if le is not None:
+                    apdu += bytes([le])
+            else:
+                apdu = bytes([cla, ins, p1, p2])
+                if le is not None:
+                    apdu += bytes([le])
             
-            if le is not None:
-                apdu.append(le)
-            
-            logger.debug(f"TX: {bytes(apdu).hex().upper()}")
+            logger.debug(f"TX: {apdu.hex().upper()}")
             
             # 发送 APDU
-            response, sw1, sw2 = self.connection.transmit(apdu)
+            response, sw1, sw2 = self.connection.transmit(list(apdu))
             
             response_bytes = bytes(response) if response else b''
             logger.debug(f"RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")

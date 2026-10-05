@@ -325,9 +325,7 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     a0_end = offset + a0_length
     
     # 解析 A0 内部: SEQUENCE { euiccSigned2, euiccSignature2 }
-    if offset >= len(response):
-        raise Asn1CodecError("Response too short for SEQUENCE tag")
-    if response[offset] != 0x30:
+    if offset >= len(response) or response[offset] != 0x30:
         raise Asn1CodecError(f"Expected SEQUENCE tag (0x30), got {response[offset]:02X}")
     offset += 1
     
@@ -345,59 +343,28 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     
     seq_end = offset + seq_length
     
-    # 解析 euiccSigned2 (SEQUENCE)
-    if offset >= len(response):
-        raise Asn1CodecError("Response too short for euiccSigned2 SEQUENCE tag")
-    if response[offset] != 0x30:
-        raise Asn1CodecError(f"Expected euiccSigned2 SEQUENCE tag (0x30), got {response[offset]:02X}")
-    offset += 1
-    
-    # 解析 euiccSigned2 length
-    euicc_signed2_len_byte = response[offset]
-    offset += 1
-    if euicc_signed2_len_byte & 0x80:
-        num_bytes = euicc_signed2_len_byte & 0x7F
-        euicc_signed2_len = 0
-        for i in range(num_bytes):
-            euicc_signed2_len = (euicc_signed2_len << 8) | response[offset]
-            offset += 1
-    else:
-        euicc_signed2_len = euicc_signed2_len_byte
-    
-    euicc_signed2_data = response[offset:offset + euicc_signed2_len]
-    offset += euicc_signed2_len
-    
-    # 解析 euiccSigned2 内部结构
-    # euiccSigned2 是一个 SEQUENCE，包含 transactionId 和 euiccOtpk
-    es2_offset = 0
-    if euicc_signed2_data[es2_offset] == 0x30:
-        es2_offset += 1
-        es2_len_byte = euicc_signed2_data[es2_offset]
-        es2_offset += 1
-        if es2_len_byte & 0x80:
-            num_bytes = es2_len_byte & 0x7F
-            for i in range(num_bytes):
-                es2_offset += 1
+    # 解析 A0 内部: SEQUENCE { [0] transactionId, [5F49] euiccOtpk }
+    # 注意：euiccSigned2 不是一个单独的 tag，而是 A0 内部的 SEQUENCE 直接包含 transactionId 和 euiccOtpk
     
     # [0] transactionId
-    if euicc_signed2_data[es2_offset] == 0x80:
-        es2_offset += 1
-        tid_len = euicc_signed2_data[es2_offset]
-        es2_offset += 1
-        result['transaction_id'] = euicc_signed2_data[es2_offset:es2_offset + tid_len].hex().upper()
-        es2_offset += tid_len
-        
-        # [5F49] euiccOtpk (Application-Specific tag 73 = 0x5F49)
-        if es2_offset < len(euicc_signed2_data):
-            if euicc_signed2_data[es2_offset] == 0x5F and es2_offset + 1 < len(euicc_signed2_data):
-                if euicc_signed2_data[es2_offset + 1] == 0x49:
-                    es2_offset += 2
-                    otpk_len = euicc_signed2_data[es2_offset]
-                    es2_offset += 1
-                    result['euicc_otpk'] = euicc_signed2_data[es2_offset:es2_offset + otpk_len]
+    if offset < seq_end and response[offset] == 0x80:
+        offset += 1
+        tid_len = response[offset]
+        offset += 1
+        result['transaction_id'] = response[offset:offset + tid_len].hex().upper()
+        offset += tid_len
     
-    # 解析 euiccSignature2 (tag 5F37 = Application-Specific [55])
-    if offset < seq_end and response[offset] == 0x5F:
+    # [5F49] euiccOtpk (Application-Specific tag 73 = 0x5F49)
+    if offset < seq_end and response[offset] == 0x5F and offset + 1 < len(response) and response[offset + 1] == 0x49:
+        offset += 2
+        otpk_len = response[offset]
+        offset += 1
+        result['euicc_otpk'] = response[offset:offset + otpk_len]
+        offset += otpk_len
+    
+    # [55] euiccSignature2 (Application-Specific tag 55 = 0x5F37)
+    # 注意：euiccSignature2 在 SEQUENCE 之外，所以在 seq_end 之后
+    if offset < len(response) and response[offset] == 0x5F:
         if offset + 1 < len(response) and response[offset + 1] == 0x37:
             offset += 2
             # 解析 length

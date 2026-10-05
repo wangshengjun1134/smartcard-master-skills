@@ -30,6 +30,68 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _bcd_swap_to_digits(bcd: bytes) -> str:
+    """半字节交换 BCD → 十进制数字串（ICCID）。"""
+    out = []
+    for byte in bcd:
+        low = byte & 0x0F
+        high = (byte >> 4) & 0x0F
+        out.append(f"{low:X}")
+        if high != 0x0F:
+            out.append(f"{high:X}")
+    return "".join(out)
+
+
+def parse_profiles_info(resp: bytes):
+    """解析 GetProfilesInfo(BF2D) 响应，返回 [{iccid, aid, state}, ...]。
+
+    以 TLV 扫描方式递归下降查找每个 Profile 条目的
+    5A(ICCID) / 4F(ISDP-AID) / 9F7001(profileState)。
+    """
+    profiles = []
+    cur = {}
+
+    def walk(data: bytes):
+        nonlocal cur
+        i = 0
+        while i < len(data):
+            tag = data[i]
+            if (tag & 0x1F) == 0x1F:  # 多字节 tag
+                tag_full = data[i:i + 2]
+                i += 2
+            else:
+                tag_full = bytes([tag])
+                i += 1
+            if i >= len(data):
+                break
+            length = data[i]
+            i += 1
+            if length & 0x80:
+                n = length & 0x7F
+                if i + n > len(data):
+                    break
+                length = int.from_bytes(data[i:i + n], 'big')
+                i += n
+            value = data[i:i + length]
+            constructed = bool(tag & 0x20)
+            if constructed:
+                walk(value)
+            elif tag_full == b'\x5a' and len(value) == 10:
+                cur['iccid'] = _bcd_swap_to_digits(value)
+            elif tag_full == b'\x4f' and len(value) >= 5:
+                cur['aid'] = value.hex().upper()
+            elif tag_full == b'\x9f\x70' and len(value) >= 1:
+                # profileState（1 字节：0=DISABLED, 1=ENABLED）是条目内最后的关键字段
+                cur['state'] = value[-1]
+                profiles.append({'iccid': cur.get('iccid', ''), 'aid': cur.get('aid', ''),
+                                 'state': cur.get('state', -1)})
+                cur = {}
+            i += length
+
+    walk(resp)
+    return profiles
+
+
 def cmd_list_readers(args):
     readers = CardReader.list_readers()
     if not readers:
@@ -559,12 +621,15 @@ def cmd_test_profile_download(args):
                         break
             print(f"  [BF36] final response: {bytes_to_hex(bf36_resp)}")
 
-            # 同会话验证：GetProfilesInfo(BF2D)
-            r2d, s1, s2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00, 0x00]))
-            print(f"  [BF2D] RX: {bytes_to_hex(r2d)} SW={sw_to_string(s1, s2)}")
+            # 同会话验证：GetProfilesInfo(BF2D)，确认 Profile 已安装及其状态
+            r2d, s1, s2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00]))
+            print(f"  [BF2D] GetProfilesInfo RX: {bytes_to_hex(r2d)} SW={sw_to_string(s1, s2)}")
+            for info in parse_profiles_info(r2d):
+                state = {0: "DISABLED", 1: "ENABLED"}.get(info["state"], f"UNKNOWN({info['state']})")
+                print(f"    Profile: ICCID={info['iccid']} AID={info['aid']} State={state}")
 
             print("\n✓ Profile Download flow completed")
-    
+
     except CardError as e:
         logger.error(f"Card error: {e}")
         sys.exit(1)
@@ -756,12 +821,15 @@ def cmd_test_profile_download(args):
                         break
             print(f"  [BF36] final response: {bytes_to_hex(bf36_resp)}")
 
-            # 同会话验证：GetProfilesInfo(BF2D)
-            r2d, s1, s2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00, 0x00]))
-            print(f"  [BF2D] RX: {bytes_to_hex(r2d)} SW={sw_to_string(s1, s2)}")
+            # 同会话验证：GetProfilesInfo(BF2D)，确认 Profile 已安装及其状态
+            r2d, s1, s2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00]))
+            print(f"  [BF2D] GetProfilesInfo RX: {bytes_to_hex(r2d)} SW={sw_to_string(s1, s2)}")
+            for info in parse_profiles_info(r2d):
+                state = {0: "DISABLED", 1: "ENABLED"}.get(info["state"], f"UNKNOWN({info['state']})")
+                print(f"    Profile: ICCID={info['iccid']} AID={info['aid']} State={state}")
 
             print("\n✓ Profile Download flow completed")
-    
+
     except CardError as e:
         logger.error(f"Card error: {e}")
         sys.exit(1)

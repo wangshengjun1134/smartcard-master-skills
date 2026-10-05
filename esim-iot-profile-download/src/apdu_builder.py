@@ -146,7 +146,8 @@ def euicc_memory_reset(channel: int) -> ApduCommand:
 
 def list_notification(channel: int) -> ApduCommand:
     """ListNotification (BF28)"""
-    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x28, 0x00, 0x00]))
+    # Java: 81E2910003BF280000 -> Lc=03, Data=BF2800, Le=00
+    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x28, 0x00]))
 
 
 def remove_notification(channel: int, sequence: bytes) -> ApduCommand:
@@ -156,7 +157,22 @@ def remove_notification(channel: int, sequence: bytes) -> ApduCommand:
 
 def get_profiles_info(channel: int) -> ApduCommand:
     """GetProfilesInfo (BF2D)"""
-    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00, 0x00]))
+    # Java: 81E2910003BF2D00 -> Lc=03, Data=BF2D00, Le=00
+    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2D, 0x00]))
+
+
+def enable_profile(channel: int, aid: bytes, refresh_flag: bool = True) -> ApduCommand:
+    """EnableProfile (BF31, ES10c)
+
+    EnableProfileRequest ::= [49] SEQUENCE {
+        profileIdentifier  CHOICE { isdpAid [APPLICATION 15] (4F) Octet16, ... },
+        refreshFlag        BOOLEAN
+    }
+    注意：本测试卡（SGP.32）不支持 ES10c EnableProfile，实测返回 undefinedError(127)；
+    Profile 启用需走 eIM（AddInitialEim BF57 + EnablePSMO BF51）。
+    """
+    body = bytes([0x4F, len(aid)]) + aid + bytes([0x01, 0x01, 0xFF if refresh_flag else 0x00])
+    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x31, len(body)]) + body)
 
 
 def store_data(channel: int, block_number: int, is_last: bool, data: bytes) -> ApduCommand:

@@ -718,6 +718,9 @@ def cmd_test_profile_download(args):
                 transaction_id=auth_result['transaction_id'],
                 authenticate_server_response=b'', # 简化处理
             )
+            print(f"  smdp_signed2 length: {len(auth_client_result["smdp_signed2"])}")
+            print(f"  smdp_signature2 length: {len(auth_client_result["smdp_signature2"])}")
+            print(f"  smdp_certificate length: {len(auth_client_result["smdp_certificate"])}")
             bf21 = encode_bf21_prepare_download_request(
                 smdp_signed2=auth_client_result['smdp_signed2'],
                 smdp_signature2=auth_client_result['smdp_signature2'],

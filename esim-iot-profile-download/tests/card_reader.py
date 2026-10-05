@@ -170,23 +170,27 @@ class CardReader:
             response_bytes = bytes(response) if response else b''
             logger.debug(f"RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
             
-            # 自动处理 61XX (GET RESPONSE) 和 91XX (FETCH)
-            if sw1 == 0x61:
-                le = sw2
+            # 自动循环处理 61XX (GET RESPONSE) —— T=0 下大响应会分多轮返回。
+            # 注意 SW=61 00 表示还有 256 字节（0x00 编码为 256）。
+            while sw1 == 0x61:
+                le = sw2 if sw2 != 0 else 256
                 logger.debug(f"  -> GET RESPONSE (len={le})")
-                gr_apdu = bytes([cla, 0xC0, 0x00, 0x00, le])
-                response, sw1, sw2 = self.connection.transmit(list(gr_apdu))
-                response_bytes = bytes(response) if response else b''
-                logger.debug(f"  RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
-            elif sw1 == 0x91:
-                # FETCH (91XX) - 用于 eUICC 异步响应
-                le = sw2
+                gr_apdu = bytes([cla, 0xC0, 0x00, 0x00, le if le < 256 else 0x00])
+                chunk, sw1, sw2 = self.connection.transmit(list(gr_apdu))
+                chunk_bytes = bytes(chunk) if chunk else b''
+                response_bytes += chunk_bytes
+                logger.debug(f"  RX: {chunk_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
+
+            # 自动处理 91XX (FETCH) —— eUICC 异步响应
+            while sw1 == 0x91:
+                le = sw2 if sw2 != 0 else 256
                 logger.debug(f"  -> FETCH (len={le})")
-                fetch_apdu = bytes([0x80 | (cla & 0x0F), 0x12, 0x00, 0x00, le])
-                response, sw1, sw2 = self.connection.transmit(list(fetch_apdu))
-                response_bytes = bytes(response) if response else b''
-                logger.debug(f"  RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
-            
+                fetch_apdu = bytes([0x80 | (cla & 0x0F), 0x12, 0x00, 0x00, le if le < 256 else 0x00])
+                chunk, sw1, sw2 = self.connection.transmit(list(fetch_apdu))
+                chunk_bytes = bytes(chunk) if chunk else b''
+                response_bytes += chunk_bytes
+                logger.debug(f"  RX: {chunk_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
+
             return response_bytes, sw1, sw2
 
         except Exception as e:

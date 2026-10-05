@@ -250,12 +250,14 @@ class LocalSmdpPlus:
             # 3. 获取 Profile Package 模板
             template = self.packages.require_by_matching_id(session.matching_id)
 
-            # 4. 生成 BPP
-            bpp_der = self.bpp_generator.generate_bpp(
+            # 4. 生成标准 BF36 BoundProfilePackage（ECKA + SCP03t）
+            from .bpp_codec import encode_standard_bpp
+            bpp_der = encode_standard_bpp(
                 transaction_id=transaction_id,
                 eid=session.eid,
-                euicc_otpk_bytes=euicc_otpk,
+                euicc_otpk=euicc_otpk,
                 template=template,
+                dp_pb_private_key=self.dp_profile_binding_identity.private_key,
             )
             
             # 6. 更新会话

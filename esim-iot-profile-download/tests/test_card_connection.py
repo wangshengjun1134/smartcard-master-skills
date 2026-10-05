@@ -593,11 +593,76 @@ def cmd_test_profile_download(args):
             tp = bytes([0xFF]*3 + [0x7F, 0x9D, 0x00, 0xDF, 0xBF, 0x00, 0x00, 0x1F, 0xE2, 0x00, 0x00, 0x00, 0xC7, 0xEB, 0x00, 0x00, 0x01, 0x68, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00])
             card.transmit(0x80, 0x10, 0x00, 0x00, tp)
             card.transmit(0x80, 0xF2, 0x00, 0x0C)
+            # 打开第二个逻辑通道 (用于下载)
             resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
-            channel = resp[0] if resp and len(resp) > 0 else 1
+            channel2 = resp[0] if resp and len(resp) > 0 else 2
+            print(f"  MANAGE_CHANNEL (2nd): SW={sw_to_string(sw1, sw2)} Channel={channel2}")
+            
+            # 使用 channel2 进行下载操作
+            channel = channel2
             isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
             card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  SELECT ISD-R: Channel={channel}")
+            channel = resp[0] if resp and len(resp) > 0 else 1
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel1 = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL (1st): SW={sw_to_string(sw1, sw2)} Channel={channel1}")
+            
+            # 打开第二个逻辑通道 (用于下载)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel2 = resp[0] if resp and len(resp) > 0 else 2
+            print(f"  MANAGE_CHANNEL (2nd): SW={sw_to_string(sw1, sw2)} Channel={channel2}")
+            
+            # 使用 channel2 进行下载操作
+            channel = channel2
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  SELECT ISD-R: Channel={channel}")
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel1 = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL (1st): SW={sw_to_string(sw1, sw2)} Channel={channel1}")
+            
+            # 打开第二个逻辑通道 (用于下载)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel2 = resp[0] if resp and len(resp) > 0 else 2
+            print(f"  MANAGE_CHANNEL (2nd): SW={sw_to_string(sw1, sw2)} Channel={channel2}")
+            
+            # 使用 channel2 进行下载操作
+            channel = channel2
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  SELECT ISD-R: Channel={channel}")
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel1 = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL (1st): SW={sw_to_string(sw1, sw2)} Channel={channel1}")
+            
+            # 打开第二个逻辑通道 (用于下载)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel2 = resp[0] if resp and len(resp) > 0 else 2
+            print(f"  MANAGE_CHANNEL (2nd): SW={sw_to_string(sw1, sw2)} Channel={channel2}")
+            
+            # 使用 channel2 进行下载操作
+            channel = channel2
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  SELECT ISD-R: Channel={channel}")
             print(f"  Channel: {channel}")
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel1 = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL (1st): SW={sw_to_string(sw1, sw2)} Channel={channel1}")
+            
+            # 打开第二个逻辑通道 (用于下载)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel2 = resp[0] if resp and len(resp) > 0 else 2
+            print(f"  MANAGE_CHANNEL (2nd): SW={sw_to_string(sw1, sw2)} Channel={channel2}")
+            
+            # 使用 channel2 进行下载操作
+            channel = channel2
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  SELECT ISD-R: Channel={channel}")
             
             def store_data(data: bytes, desc: str):
                 """发送 StoreData 命令 (ES10x)"""

@@ -228,6 +228,8 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     """
     解码 PrepareDownloadResponse (BF21 响应)
     
+    严格按照 Java版本 Sgp22ProfileDownloadCodec.decodePrepareDownloadResponse 实现
+    
     格式:
         BF21 ::= [33] IMPLICIT SEQUENCE {
             euiccSigned2      SEQUENCE,
@@ -244,21 +246,20 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
         raise Asn1CodecError("Response too short")
     
     result = {}
+    offset = 0
     
     # 解析 BF21 tag
-    offset = 0
     if response[offset] == 0xBF and offset + 1 < len(response) and response[offset + 1] == 0x21:
-        offset += 2  # BF 21
+        offset += 2
     elif response[offset] == 0xBF:
-        offset += 1  # BF
+        offset += 1
     else:
-        raise Asn1CodecError(f"Expected BF21 tag, got {response[:2].hex().upper()}")
+        raise Asn1CodecError(f"Expected BF21 tag, got {response[:min(2, len(response))].hex().upper()}")
     
     # 解析 length
     length_byte = response[offset]
     offset += 1
     if length_byte & 0x80:
-        # 多字节 length
         num_bytes = length_byte & 0x7F
         length = 0
         for i in range(num_bytes):
@@ -267,14 +268,36 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     else:
         length = length_byte
     
-    # 解析 euiccSigned2 (tag A0 或 A1)
+    # 解析 A0 tag (context-specific [0])
+    # 某些卡实现使用 A1 而不是 A0
     if offset >= len(response):
-        raise Asn1CodecError("Response too short for euiccSigned2")
-    
+        raise Asn1CodecError("Response too short for A0 tag")
     if response[offset] not in (0xA0, 0xA1):
-        raise Asn1CodecError(f"Expected tag A0 or A1, got {response[offset]:02X}")
-    
+        raise Asn1CodecError(f"Expected A0 or A1 tag, got {response[offset]:02X}")
     offset += 1
+    
+    # 解析 A0 length
+    a0_len_byte = response[offset]
+    offset += 1
+    if a0_len_byte & 0x80:
+        num_bytes = a0_len_byte & 0x7F
+        a0_length = 0
+        for i in range(num_bytes):
+            a0_length = (a0_length << 8) | response[offset]
+            offset += 1
+    else:
+        a0_length = a0_len_byte
+    
+    # A0 包含: SEQUENCE { euiccSigned2 }, [5F37] euiccSignature2
+    a0_end = offset + a0_length
+    
+    # 解析 euiccSigned2 (SEQUENCE)
+    if offset >= len(response):
+        raise Asn1CodecError("Response too short for euiccSigned2 SEQUENCE tag")
+    if response[offset] != 0x30:
+        raise Asn1CodecError(f"Expected euiccSigned2 SEQUENCE tag (0x30), got {response[offset]:02X}")
+    offset += 1
+    
     # 解析 euiccSigned2 length
     euicc_signed2_len_byte = response[offset]
     offset += 1
@@ -284,11 +307,6 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
         for i in range(num_bytes):
             euicc_signed2_len = (euicc_signed2_len << 8) | response[offset]
             offset += 1
-        # 如果 euicc_signed2_len > 127，说明是短格式 length
-        if euicc_signed2_len > 127 and euicc_signed2_len_byte == 0x81:
-            # 短格式 length: 0x8C = 140
-            euicc_signed2_len = response[offset - 1]
-            offset -= 1
     else:
         euicc_signed2_len = euicc_signed2_len_byte
     
@@ -296,7 +314,6 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     offset += euicc_signed2_len
     
     # 解析 euiccSigned2 内部结构
-    # 跳过 SEQUENCE tag 和 length
     seq_offset = 0
     if euicc_signed2_data[seq_offset] == 0x30:
         seq_offset += 1
@@ -325,7 +342,7 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
                     result['euicc_otpk'] = euicc_signed2_data[seq_offset:seq_offset + otpk_len]
     
     # 解析 euiccSignature2 (tag 5F37 = Application-Specific [55])
-    if offset < len(response) and response[offset] == 0x5F:
+    if offset < a0_end and response[offset] == 0x5F:
         if offset + 1 < len(response) and response[offset + 1] == 0x37:
             offset += 2
             # 解析 length

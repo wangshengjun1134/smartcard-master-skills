@@ -133,14 +133,24 @@ def encode_smdp_signed2(
 ) -> bytes:
     """
     编码 SmdpSigned2
-    
+
     SmdpSigned2 ::= SEQUENCE {
-        transactionId        OCTET STRING,
-        ccRequired           BOOLEAN DEFAULT FALSE,
-        bppEuiccOtpk         [73] OCTET STRING OPTIONAL
+        transactionId        [0] OCTET STRING,
+        ccRequired           BOOLEAN,
+        bppEuiccOtpk         [5F49] OCTET STRING OPTIONAL
     }
     """
     tid_bytes = bytes.fromhex(transaction_id.replace(" ", ""))
+    
+    # 严格按照 Java版本格式编码
+    # Java: new DERTaggedObject(false, 0, new DEROctetString(tid_bytes))
+    tid_field = univ.OctetString(tid_bytes).subtype(
+        implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0)
+    )
+    
+    # Java: confirmationCodeRequired ? ASN1Boolean.TRUE : ASN1Boolean.FALSE
+    # 始终包含 ccRequired 字段（即使为 FALSE）
+    cc_field = BOOLEAN(confirmation_code_required)
     
     if bpp_euicc_otpk:
         # 带 otpk
@@ -149,24 +159,24 @@ def encode_smdp_signed2(
         )
         smdp_signed2 = univ.Sequence(
             componentType=namedtype.NamedTypes(
-                namedtype.NamedType('transactionId', univ.OctetString()),
-                namedtype.DefaultedNamedType('ccRequired', BOOLEAN(False)),
-                namedtype.OptionalNamedType('bppEuiccOtpk', otpk_field),
+                namedtype.NamedType('transactionId', tid_field),
+                namedtype.NamedType('ccRequired', cc_field),
+                namedtype.NamedType('bppEuiccOtpk', otpk_field),
             )
         )
-        smdp_signed2.setComponentByPosition(0, univ.OctetString(tid_bytes))
-        smdp_signed2.setComponentByPosition(1, BOOLEAN(confirmation_code_required))
+        smdp_signed2.setComponentByPosition(0, tid_field)
+        smdp_signed2.setComponentByPosition(1, cc_field)
         smdp_signed2.setComponentByPosition(2, otpk_field)
     else:
         smdp_signed2 = univ.Sequence(
             componentType=namedtype.NamedTypes(
-                namedtype.NamedType('transactionId', univ.OctetString()),
-                namedtype.DefaultedNamedType('ccRequired', BOOLEAN(False)),
+                namedtype.NamedType('transactionId', tid_field),
+                namedtype.NamedType('ccRequired', cc_field),
             )
         )
-        smdp_signed2.setComponentByPosition(0, univ.OctetString(tid_bytes))
-        smdp_signed2.setComponentByPosition(1, BOOLEAN(confirmation_code_required))
-    
+        smdp_signed2.setComponentByPosition(0, tid_field)
+        smdp_signed2.setComponentByPosition(1, cc_field)
+
     try:
         return encoder.encode(smdp_signed2)
     except PyAsn1Error as e:
@@ -183,43 +193,70 @@ def encode_bf21_prepare_download_request(
 ) -> bytes:
     """
     编码 PrepareDownloadRequest (BF21)
+    
+    严格按照 Java版本 Sgp22ProfileDownloadCodec.encodePrepareDownloadRequest 实现
     """
     try:
-        ss2, _ = decoder.decode(smdp_signed2)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode smdpSigned2: {e}")
-    
-    try:
+        # 解析 smdp_certificate
         cert, _ = decoder.decode(smdp_certificate)
     except PyAsn1Error as e:
         raise Asn1CodecError(f"Cannot decode smdpCertificate: {e}")
+
+    # 编码 smdpSignature2 [55]
+    smdp_sig2_field = univ.OctetString(smdp_signature2).subtype(
+        implicitTag=tag.Tag(tag.tagClassApplication, tag.tagFormatSimple, 55)
+    )
+    smdp_sig2_der = encoder.encode(smdp_sig2_field)
     
-    # 构建字段
-    fields = [
-        ('smdpSigned2', ss2),
-        ('smdpSignature2', univ.OctetString(smdp_signature2).subtype(
-            implicitTag=tag.Tag(tag.tagClassApplication, tag.tagFormatSimple, 55)
-        )),
-    ]
+    # 编码 smdpCertificate
+    cert_der = encoder.encode(cert)
     
+    # 手动构建 BF21 SEQUENCE
+    # SEQUENCE {
+    #     smdpSigned2      (原始字节)
+    #     smdpSignature2   [55] OCTET STRING
+    #     hashCc           OCTET STRING (可选)
+    #     smdpCertificate  SEQUENCE
+    # }
+    
+    # 计算总长度
+    total_len = len(smdp_signed2) + len(smdp_sig2_der) + len(cert_der)
     if hash_cc:
-        fields.append(('hashCc', univ.OctetString(hash_cc)))
+        total_len += len(hash_cc) + 2  # tag + length
     
-    fields.append(('smdpCertificate', cert))
+    # 编码 SEQUENCE header
+    if total_len < 128:
+        seq_header = bytes([0x30, total_len])
+    elif total_len < 256:
+        seq_header = bytes([0x30, 0x81, total_len])
+    else:
+        seq_header = bytes([0x30, 0x82, (total_len >> 8) & 0xFF, total_len & 0xFF])
     
-    bf21 = univ.Sequence(
-        componentType=namedtype.NamedTypes(
-            *(namedtype.NamedType(name, comp) for name, comp in fields)
-        )
-    ).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 33))
+    # 构建 BF21
+    bf21_body = seq_header + smdp_signed2 + smdp_sig2_der + cert_der
+    if hash_cc:
+        # 插入 hashCc (OCTET STRING)
+        # 简化处理：假设 hash_cc 长度 < 128
+        hash_cc_der = bytes([0x04, len(hash_cc)]) + hash_cc
+        # 插入到 smdpSignature2 和 smdpCertificate 之间
+        bf21_body = seq_header + smdp_signed2 + smdp_sig2_der + hash_cc_der + cert_der
+        # 重新计算长度
+        total_len = len(bf21_body) - 2  # 减去 tag 和 length
+        if total_len < 128:
+            bf21_body = bytes([0x30, total_len]) + bf21_body[2:]
+        elif total_len < 256:
+            bf21_body = bytes([0x30, 0x81, total_len]) + bf21_body[3:]
     
-    for i, (name, comp) in enumerate(fields):
-        bf21.setComponentByPosition(i, comp)
+    # 添加 BF21 tag [33] IMPLICIT
+    bf21_len = len(bf21_body)
+    if bf21_len < 128:
+        bf21 = bytes([0xBF, 0x21, bf21_len]) + bf21_body
+    elif bf21_len < 256:
+        bf21 = bytes([0xBF, 0x21, 0x81, bf21_len]) + bf21_body
+    else:
+        bf21 = bytes([0xBF, 0x21, 0x82, (bf21_len >> 8) & 0xFF, bf21_len & 0xFF]) + bf21_body
     
-    try:
-        return encoder.encode(bf21)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot encode BF21: {e}")
+    return bf21
 
 
 # ========== PrepareDownloadResponse 解码 ==========
@@ -232,14 +269,11 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     
     格式:
         BF21 ::= [33] IMPLICIT SEQUENCE {
-            euiccSigned2      SEQUENCE,
+            euiccSigned2      SEQUENCE {
+                transactionId  [0] OCTET STRING,
+                euiccOtpk      [5F49] OCTET STRING
+            },
             euiccSignature2   [55] OCTET STRING
-        }
-    
-    euiccSigned2 格式:
-        SEQUENCE {
-            transactionId  [0] OCTET STRING,
-            euiccOtpk      [5F49] OCTET STRING (Application-Specific tag 73)
         }
     """
     if len(response) < 4:
@@ -288,8 +322,28 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     else:
         a0_length = a0_len_byte
     
-    # A0 包含: SEQUENCE { euiccSigned2 }, [5F37] euiccSignature2
     a0_end = offset + a0_length
+    
+    # 解析 A0 内部: SEQUENCE { euiccSigned2, euiccSignature2 }
+    if offset >= len(response):
+        raise Asn1CodecError("Response too short for SEQUENCE tag")
+    if response[offset] != 0x30:
+        raise Asn1CodecError(f"Expected SEQUENCE tag (0x30), got {response[offset]:02X}")
+    offset += 1
+    
+    # 解析 SEQUENCE length
+    seq_len_byte = response[offset]
+    offset += 1
+    if seq_len_byte & 0x80:
+        num_bytes = seq_len_byte & 0x7F
+        seq_length = 0
+        for i in range(num_bytes):
+            seq_length = (seq_length << 8) | response[offset]
+            offset += 1
+    else:
+        seq_length = seq_len_byte
+    
+    seq_end = offset + seq_length
     
     # 解析 euiccSigned2 (SEQUENCE)
     if offset >= len(response):
@@ -314,35 +368,36 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     offset += euicc_signed2_len
     
     # 解析 euiccSigned2 内部结构
-    seq_offset = 0
-    if euicc_signed2_data[seq_offset] == 0x30:
-        seq_offset += 1
-        seq_len_byte = euicc_signed2_data[seq_offset]
-        seq_offset += 1
-        if seq_len_byte & 0x80:
-            num_bytes = seq_len_byte & 0x7F
+    # euiccSigned2 是一个 SEQUENCE，包含 transactionId 和 euiccOtpk
+    es2_offset = 0
+    if euicc_signed2_data[es2_offset] == 0x30:
+        es2_offset += 1
+        es2_len_byte = euicc_signed2_data[es2_offset]
+        es2_offset += 1
+        if es2_len_byte & 0x80:
+            num_bytes = es2_len_byte & 0x7F
             for i in range(num_bytes):
-                seq_offset += 1
+                es2_offset += 1
     
     # [0] transactionId
-    if euicc_signed2_data[seq_offset] == 0x80:
-        seq_offset += 1
-        tid_len = euicc_signed2_data[seq_offset]
-        seq_offset += 1
-        result['transaction_id'] = euicc_signed2_data[seq_offset:seq_offset + tid_len].hex().upper()
-        seq_offset += tid_len
+    if euicc_signed2_data[es2_offset] == 0x80:
+        es2_offset += 1
+        tid_len = euicc_signed2_data[es2_offset]
+        es2_offset += 1
+        result['transaction_id'] = euicc_signed2_data[es2_offset:es2_offset + tid_len].hex().upper()
+        es2_offset += tid_len
         
         # [5F49] euiccOtpk (Application-Specific tag 73 = 0x5F49)
-        if seq_offset < len(euicc_signed2_data):
-            if euicc_signed2_data[seq_offset] == 0x5F and seq_offset + 1 < len(euicc_signed2_data):
-                if euicc_signed2_data[seq_offset + 1] == 0x49:
-                    seq_offset += 2
-                    otpk_len = euicc_signed2_data[seq_offset]
-                    seq_offset += 1
-                    result['euicc_otpk'] = euicc_signed2_data[seq_offset:seq_offset + otpk_len]
+        if es2_offset < len(euicc_signed2_data):
+            if euicc_signed2_data[es2_offset] == 0x5F and es2_offset + 1 < len(euicc_signed2_data):
+                if euicc_signed2_data[es2_offset + 1] == 0x49:
+                    es2_offset += 2
+                    otpk_len = euicc_signed2_data[es2_offset]
+                    es2_offset += 1
+                    result['euicc_otpk'] = euicc_signed2_data[es2_offset:es2_offset + otpk_len]
     
     # 解析 euiccSignature2 (tag 5F37 = Application-Specific [55])
-    if offset < a0_end and response[offset] == 0x5F:
+    if offset < seq_end and response[offset] == 0x5F:
         if offset + 1 < len(response) and response[offset + 1] == 0x37:
             offset += 2
             # 解析 length

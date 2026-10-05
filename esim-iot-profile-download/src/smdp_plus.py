@@ -240,14 +240,11 @@ class LocalSmdpPlus:
             raise SmdpPlusError(f"Invalid session state: {session.state.name}")
         
         try:
-            # 2. 解析 PrepareDownloadResponse (简化处理：生成有效的 dummy OTPK)
-            from cryptography.hazmat.primitives.asymmetric import ec
-            from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-            from cryptography.hazmat.backends import default_backend
-            dummy_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-            euicc_otpk = dummy_private_key.public_key().public_bytes(
-                Encoding.X962, PublicFormat.UncompressedPoint
-            )  # 65 bytes: 0x04 || x || y
+            # 2. 解析 PrepareDownloadResponse，提取 euiccOtpk
+            parsed = decode_prepare_download_response(prepare_download_response)
+            euicc_otpk = parsed.get('euicc_otpk')
+            if not euicc_otpk:
+                raise SmdpPlusError("eUICC OTPK not found in PrepareDownloadResponse")
             
             # 3. 获取 Profile Package 模板
             template = self.packages.require_by_matching_id(session.matching_id)

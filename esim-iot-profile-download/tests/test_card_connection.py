@@ -500,7 +500,10 @@ def cmd_test_profile_download(args):
                 smdp_signature2=auth_client_result['smdp_signature2'],
                 smdp_certificate=auth_client_result['smdp_certificate'],
             )
-            # 捕获 BF21 响应
+            print(f"  BF21 total length: {len(bf21)} bytes")
+            print(f"  BF21 first 64 bytes: {bytes_to_hex(bf21[:64])}")
+            
+            # 捕获 BF21 响应（只在最后一个块之后返回）
             bf21_response = b''
             offset = 0
             while offset < len(bf21):
@@ -513,8 +516,13 @@ def cmd_test_profile_download(args):
                 print(f"  [BF21] RX: {bytes_to_hex(resp)} SW={sw}")
                 if sw != "9000":
                     raise Exception(f"BF21 StoreData failed: {sw}")
-                bf21_response = resp
+                # 只在最后一个块之后保存响应
+                if is_last and resp:
+                    bf21_response = resp
                 offset += 255
+            
+            print(f"  BF21 response length: {len(bf21_response)} bytes")
+            print(f"  BF21 response: {bytes_to_hex(bf21_response)}")
             
             # 7. LoadProfilePackage (BF36)
             print("\n=== LoadProfilePackage (BF36) ===")
@@ -650,7 +658,10 @@ def cmd_test_profile_download(args):
                 smdp_signature2=auth_client_result['smdp_signature2'],
                 smdp_certificate=auth_client_result['smdp_certificate'],
             )
-            # 捕获 BF21 响应
+            print(f"  BF21 total length: {len(bf21)} bytes")
+            print(f"  BF21 first 64 bytes: {bytes_to_hex(bf21[:64])}")
+            
+            # 捕获 BF21 响应（只在最后一个块之后返回）
             bf21_response = b''
             offset = 0
             while offset < len(bf21):
@@ -663,8 +674,13 @@ def cmd_test_profile_download(args):
                 print(f"  [BF21] RX: {bytes_to_hex(resp)} SW={sw}")
                 if sw != "9000":
                     raise Exception(f"BF21 StoreData failed: {sw}")
-                bf21_response = resp
+                # 只在最后一个块之后保存响应
+                if is_last and resp:
+                    bf21_response = resp
                 offset += 255
+            
+            print(f"  BF21 response length: {len(bf21_response)} bytes")
+            print(f"  BF21 response: {bytes_to_hex(bf21_response)}")
             
             # 7. LoadProfilePackage (BF36)
             print("\n=== LoadProfilePackage (BF36) ===")

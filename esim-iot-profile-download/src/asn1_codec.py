@@ -227,29 +227,81 @@ def encode_bf21_prepare_download_request(
 def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
     """
     解码 PrepareDownloadResponse (BF21 响应)
+    
+    格式:
+        BF21 ::= [33] IMPLICIT SEQUENCE {
+            euiccSigned2      SEQUENCE,
+            euiccSignature2   [55] OCTET STRING
+        }
+    
+    euiccSigned2 格式:
+        SEQUENCE {
+            transactionId  [0] OCTET STRING,
+            euiccOtpk      [5F49] OCTET STRING (Application-Specific tag 73)
+        }
     """
-    try:
-        pdu, _ = decoder.decode(response)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode PrepareDownloadResponse: {e}")
+    if len(response) < 4:
+        raise Asn1CodecError("Response too short")
     
     result = {}
     
-    # 提取 euiccSigned2
-    if pdu.getComponentPosition(0) is not None:
-        euicc_signed2 = pdu.getComponentByPosition(0)
-        result['euicc_signed2'] = encoder.encode(euicc_signed2)
-        
-        # 提取 transactionId
-        if hasattr(euicc_signed2, 'getComponentByPosition'):
-            tid = euicc_signed2.getComponentByPosition(0)
-            if tid is not None:
-                result['transaction_id'] = bytes(tid).hex().upper()
+    # 解析 BF21 tag
+    offset = 0
+    if response[offset] == 0xBF and offset + 1 < len(response) and response[offset + 1] == 0x21:
+        offset += 2  # BF 21
+    elif response[offset] == 0xBF:
+        offset += 1  # BF
+    else:
+        raise Asn1CodecError(f"Expected BF21 tag, got {response[:2].hex().upper()}")
     
-    # 提取 euiccSignature2 [55]
-    if pdu.getComponentPosition(1) is not None:
-        sig = pdu.getComponentByPosition(1)
-        result['euicc_signature2'] = bytes(sig)
+    # 解析 length
+    length_byte = response[offset]
+    offset += 1
+    if length_byte & 0x80:
+        # 多字节 length
+        num_bytes = length_byte & 0x7F
+        length = 0
+        for i in range(num_bytes):
+            length = (length << 8) | response[offset]
+            offset += 1
+    else:
+        length = length_byte
+    
+    # 解析 euiccSigned2 (tag A0 或 A1)
+    if offset >= len(response):
+        raise Asn1CodecError("Response too short for euiccSigned2")
+    
+    if response[offset] not in (0xA0, 0xA1):
+        raise Asn1CodecError(f"Expected tag A0 or A1, got {response[offset]:02X}")
+    
+    offset += 1
+    euicc_signed2_len = response[offset]
+    offset += 1
+    euicc_signed2_data = response[offset:offset + euicc_signed2_len]
+    offset += euicc_signed2_len
+    
+    # 解析 euiccSigned2 内部结构
+    # [0] transactionId
+    if euicc_signed2_data[0] == 0x80:
+        tid_len = euicc_signed2_data[1]
+        tid_offset = 2
+        result['transaction_id'] = euicc_signed2_data[tid_offset:tid_offset + tid_len].hex().upper()
+        tid_offset += tid_len
+        
+        # [5F49] euiccOtpk (Application-Specific tag 73 = 0x5F49)
+        if tid_offset < len(euicc_signed2_data):
+            if euicc_signed2_data[tid_offset] == 0x5F and tid_offset + 1 < len(euicc_signed2_data):
+                if euicc_signed2_data[tid_offset + 1] == 0x49:
+                    otpk_len = euicc_signed2_data[tid_offset + 2]
+                    otpk_offset = tid_offset + 3
+                    result['euicc_otpk'] = euicc_signed2_data[otpk_offset:otpk_offset + otpk_len]
+    
+    # 解析 euiccSignature2 (tag 5F37 = Application-Specific [55])
+    if offset < len(response) and response[offset] == 0x5F:
+        if offset + 1 < len(response) and response[offset + 1] == 0x37:
+            sig_len = response[offset + 2]
+            sig_offset = offset + 3
+            result['euicc_signature2'] = response[sig_offset:sig_offset + sig_len]
     
     return result
 

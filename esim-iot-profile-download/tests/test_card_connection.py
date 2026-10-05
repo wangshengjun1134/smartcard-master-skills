@@ -384,6 +384,306 @@ def cmd_interactive(args):
         sys.exit(1)
 
 
+def cmd_test_profile_download(args):
+    """测试完整 Profile 下载流程 (BF20 -> BF2E -> BF38 -> BF21 -> BF36)"""
+    try:
+        reader_name = args.reader if args.reader else None
+        
+        # 1. 初始化本地 SM-DP+
+        print("=== 初始化本地 SM-DP+ ===")
+        from src.smdp_plus import LocalSmdpPlus
+        from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
+        from src.pki_manager import PkiIdentity, load_private_key_from_pem, load_certificate_from_der, load_certificate_from_pem
+        from src.asn1_codec import encode_bf38_authenticate_server_request, encode_bf21_prepare_download_request, decode_bf2e_challenge
+        from src.utils import bytes_to_hex, hex_to_bytes
+        import os
+        
+        resources_dir = os.path.join(os.path.dirname(__file__), '..', 'resources')
+        certs_dir = os.path.join(resources_dir, 'certs')
+        profiles_dir = os.path.join(resources_dir, 'profiles')
+        
+        dp_auth_key = load_private_key_from_pem(open(os.path.join(certs_dir, 'SK_S_SM_DPauth_ECDSA_NIST.pem'), 'rb').read())
+        dp_auth_cert = load_certificate_from_der(open(os.path.join(certs_dir, 'CERT_S_SM_DPauth_ECDSA_NIST.der'), 'rb').read())
+        dp_pb_key = load_private_key_from_pem(open(os.path.join(certs_dir, 'SK_S_SM_DPpb_ECDSA_NIST.pem'), 'rb').read())
+        dp_pb_cert = load_certificate_from_der(open(os.path.join(certs_dir, 'CERT_S_SM_DPpb_ECDSA_NIST.der'), 'rb').read())
+        ci_cert = load_certificate_from_pem(open(os.path.join(certs_dir, 'CERT_CI_ECDSA_NIST.pem'), 'rb').read())
+        
+        upp_file = os.path.join(profiles_dir, 'PROFILE_OPERATIONAL1_8929901012345678905F.HEX')
+        upp_payload = bytes.fromhex(open(upp_file, 'r').read().strip().replace(" ", "").replace("\n", ""))
+        
+        packages = ProfilePackageStore()
+        packages.save(ProfilePackageTemplate(
+            matching_id="04386-AGYFT-A74Y8-3F815",
+            profile_id="A0000005591010FFFFFFFF8900001000",
+            profile_name="IoT Profile",
+            iccid="8929901012345678905",
+            payload=upp_payload,
+        ))
+        
+        smdp = LocalSmdpPlus(packages, PkiIdentity(dp_auth_key, [dp_auth_cert]), PkiIdentity(dp_pb_key, [dp_pb_cert]), ci_cert)
+        print(f"  SM-DP+ initialized. Packages: {len(packages)}")
+        
+        with CardReader(reader_name) as card:
+            print(f"\nReader: {card.get_reader_name()}")
+            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
+            print()
+            
+            # 2. IC1/IC2 初始化
+            print("=== IC1/IC2 Initialization ===")
+            card.transmit(0x00, 0xA4, 0x00, 0x04, bytes([0x3F, 0x00]))
+            card.transmit(0x80, 0xAA, 0x00, 0x00, bytes([0xA9, 0x05, 0x81, 0x00, 0x83, 0x01, 0x07]))
+            tp = bytes([0xFF]*3 + [0x7F, 0x9D, 0x00, 0xDF, 0xBF, 0x00, 0x00, 0x1F, 0xE2, 0x00, 0x00, 0x00, 0xC7, 0xEB, 0x00, 0x00, 0x01, 0x68, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00])
+            card.transmit(0x80, 0x10, 0x00, 0x00, tp)
+            card.transmit(0x80, 0xF2, 0x00, 0x0C)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel = resp[0] if resp and len(resp) > 0 else 1
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  Channel: {channel}")
+            
+            def store_data(data: bytes, desc: str):
+                """发送 StoreData 命令 (ES10x)"""
+                offset = 0
+                block_num = 0
+                while offset < len(data):
+                    chunk = data[offset:offset + 255]
+                    is_last = (offset + 255 >= len(data))
+                    p1 = 0x91 if is_last else 0x11
+                    print(f"  [{desc}] TX: {(0x80|channel):02X}E2{p1:02X}{block_num:02X}{len(chunk):02X}{bytes_to_hex(chunk)}")
+                    resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, block_num, chunk)
+                    sw = sw_to_string(sw1, sw2)
+                    print(f"  [{desc}] RX: {bytes_to_hex(resp)} SW={sw}")
+                    if sw != "9000":
+                        raise Exception(f"StoreData failed: {sw}")
+                    offset += 255
+                    block_num += 1
+            
+            # 3. GetEuiccInfo1 (BF20)
+            print("\n=== GetEuiccInfo1 (BF20) ===")
+            resp_bf20, _, _ = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00]))
+            print(f"  RX: {bytes_to_hex(resp_bf20)}")
+            
+            # 4. GetEuiccChallenge (BF2E)
+            print("\n=== GetEuiccChallenge (BF2E) ===")
+            resp_bf2e, _, _ = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00]))
+            print(f"  RX: {bytes_to_hex(resp_bf2e)}")
+            euicc_challenge = decode_bf2e_challenge(resp_bf2e)
+            print(f"  Challenge: {bytes_to_hex(euicc_challenge)}")
+            
+            # 5. AuthenticateServer (BF38)
+            print("\n=== AuthenticateServer (BF38) ===")
+            auth_result = smdp.initiate_authentication(
+                matching_id="04386-AGYFT-A74Y8-3F815",
+                eid="89049032123451234512345678901235",
+                euicc_challenge=euicc_challenge,
+                euicc_info1=resp_bf20,
+                smdp_address="testsmdpplus1.example.com",
+            )
+            bf38 = encode_bf38_authenticate_server_request(
+                server_signed1=auth_result['server_signed1'],
+                server_signature1=auth_result['server_signature1'],
+                euicc_ci_pk_id=auth_result['euicc_ci_pk_id'],
+                server_certificate=auth_result['server_certificate'],
+                matching_id="04386-AGYFT-A74Y8-3F815",
+                tac=b'\x00\x00\x00\x00',
+            )
+            store_data(bf38, "BF38")
+            
+            # 6. PrepareDownload (BF21)
+            print("\n=== PrepareDownload (BF21) ===")
+            auth_client_result = smdp.authenticate_client(
+                transaction_id=auth_result['transaction_id'],
+                authenticate_server_response=b'', # 简化处理
+            )
+            bf21 = encode_bf21_prepare_download_request(
+                smdp_signed2=auth_client_result['smdp_signed2'],
+                smdp_signature2=auth_client_result['smdp_signature2'],
+                smdp_certificate=auth_client_result['smdp_certificate'],
+            )
+            # 捕获 BF21 响应
+            bf21_response = b''
+            offset = 0
+            while offset < len(bf21):
+                chunk = bf21[offset:offset + 255]
+                is_last = (offset + 255 >= len(bf21))
+                p1 = 0x91 if is_last else 0x11
+                resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, offset // 255, chunk)
+                sw = sw_to_string(sw1, sw2)
+                print(f"  [BF21] TX: {(0x80|channel):02X}E2{p1:02X}{offset // 255:02X}{len(chunk):02X}...")
+                print(f"  [BF21] RX: {bytes_to_hex(resp)} SW={sw}")
+                if sw != "9000":
+                    raise Exception(f"BF21 StoreData failed: {sw}")
+                bf21_response = resp
+                offset += 255
+            
+            # 7. LoadProfilePackage (BF36)
+            print("\n=== LoadProfilePackage (BF36) ===")
+            bpp = smdp.get_bound_profile_package(
+                transaction_id=auth_result['transaction_id'],
+                prepare_download_response=bf21_response,
+            )
+            store_data(bpp, "BF36")
+            
+            print("\n✓ Profile Download flow completed")
+    
+    except CardError as e:
+        logger.error(f"Card error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Test error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+def cmd_test_profile_download(args):
+    """测试完整 Profile 下载流程 (BF20 -> BF2E -> BF38 -> BF21 -> BF36)"""
+    try:
+        reader_name = args.reader if args.reader else None
+        
+        # 1. 初始化本地 SM-DP+
+        print("=== 初始化本地 SM-DP+ ===")
+        from src.smdp_plus import LocalSmdpPlus
+        from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
+        from src.pki_manager import PkiIdentity, load_private_key_from_pem, load_certificate_from_der, load_certificate_from_pem
+        from src.asn1_codec import encode_bf38_authenticate_server_request, encode_bf21_prepare_download_request, decode_bf2e_challenge
+        from src.utils import bytes_to_hex, hex_to_bytes
+        import os
+        
+        resources_dir = os.path.join(os.path.dirname(__file__), '..', 'resources')
+        certs_dir = os.path.join(resources_dir, 'certs')
+        profiles_dir = os.path.join(resources_dir, 'profiles')
+        
+        dp_auth_key = load_private_key_from_pem(open(os.path.join(certs_dir, 'SK_S_SM_DPauth_ECDSA_NIST.pem'), 'rb').read())
+        dp_auth_cert = load_certificate_from_der(open(os.path.join(certs_dir, 'CERT_S_SM_DPauth_ECDSA_NIST.der'), 'rb').read())
+        dp_pb_key = load_private_key_from_pem(open(os.path.join(certs_dir, 'SK_S_SM_DPpb_ECDSA_NIST.pem'), 'rb').read())
+        dp_pb_cert = load_certificate_from_der(open(os.path.join(certs_dir, 'CERT_S_SM_DPpb_ECDSA_NIST.der'), 'rb').read())
+        ci_cert = load_certificate_from_pem(open(os.path.join(certs_dir, 'CERT_CI_ECDSA_NIST.pem'), 'rb').read())
+        
+        upp_file = os.path.join(profiles_dir, 'PROFILE_OPERATIONAL1_8929901012345678905F.HEX')
+        upp_payload = bytes.fromhex(open(upp_file, 'r').read().strip().replace(" ", "").replace("\n", ""))
+        
+        packages = ProfilePackageStore()
+        packages.save(ProfilePackageTemplate(
+            matching_id="04386-AGYFT-A74Y8-3F815",
+            profile_id="A0000005591010FFFFFFFF8900001000",
+            profile_name="IoT Profile",
+            iccid="8929901012345678905",
+            payload=upp_payload,
+        ))
+        
+        smdp = LocalSmdpPlus(packages, PkiIdentity(dp_auth_key, [dp_auth_cert]), PkiIdentity(dp_pb_key, [dp_pb_cert]), ci_cert)
+        print(f"  SM-DP+ initialized. Packages: {len(packages)}")
+        
+        with CardReader(reader_name) as card:
+            print(f"\nReader: {card.get_reader_name()}")
+            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
+            print()
+            
+            # 2. IC1/IC2 初始化
+            print("=== IC1/IC2 Initialization ===")
+            card.transmit(0x00, 0xA4, 0x00, 0x04, bytes([0x3F, 0x00]))
+            card.transmit(0x80, 0xAA, 0x00, 0x00, bytes([0xA9, 0x05, 0x81, 0x00, 0x83, 0x01, 0x07]))
+            tp = bytes([0xFF]*3 + [0x7F, 0x9D, 0x00, 0xDF, 0xBF, 0x00, 0x00, 0x1F, 0xE2, 0x00, 0x00, 0x00, 0xC7, 0xEB, 0x00, 0x00, 0x01, 0x68, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00])
+            card.transmit(0x80, 0x10, 0x00, 0x00, tp)
+            card.transmit(0x80, 0xF2, 0x00, 0x0C)
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            channel = resp[0] if resp and len(resp) > 0 else 1
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            print(f"  Channel: {channel}")
+            
+            def store_data(data: bytes, desc: str):
+                """发送 StoreData 命令 (ES10x)"""
+                offset = 0
+                block_num = 0
+                while offset < len(data):
+                    chunk = data[offset:offset + 255]
+                    is_last = (offset + 255 >= len(data))
+                    p1 = 0x91 if is_last else 0x11
+                    print(f"  [{desc}] TX: {(0x80|channel):02X}E2{p1:02X}{block_num:02X}{len(chunk):02X}{bytes_to_hex(chunk)}")
+                    resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, block_num, chunk)
+                    sw = sw_to_string(sw1, sw2)
+                    print(f"  [{desc}] RX: {bytes_to_hex(resp)} SW={sw}")
+                    if sw != "9000":
+                        raise Exception(f"StoreData failed: {sw}")
+                    offset += 255
+                    block_num += 1
+            
+            # 3. GetEuiccInfo1 (BF20)
+            print("\n=== GetEuiccInfo1 (BF20) ===")
+            resp_bf20, _, _ = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00]))
+            print(f"  RX: {bytes_to_hex(resp_bf20)}")
+            
+            # 4. GetEuiccChallenge (BF2E)
+            print("\n=== GetEuiccChallenge (BF2E) ===")
+            resp_bf2e, _, _ = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00]))
+            print(f"  RX: {bytes_to_hex(resp_bf2e)}")
+            euicc_challenge = decode_bf2e_challenge(resp_bf2e)
+            print(f"  Challenge: {bytes_to_hex(euicc_challenge)}")
+            
+            # 5. AuthenticateServer (BF38)
+            print("\n=== AuthenticateServer (BF38) ===")
+            auth_result = smdp.initiate_authentication(
+                matching_id="04386-AGYFT-A74Y8-3F815",
+                eid="89049032123451234512345678901235",
+                euicc_challenge=euicc_challenge,
+                euicc_info1=resp_bf20,
+                smdp_address="testsmdpplus1.example.com",
+            )
+            bf38 = encode_bf38_authenticate_server_request(
+                server_signed1=auth_result['server_signed1'],
+                server_signature1=auth_result['server_signature1'],
+                euicc_ci_pk_id=auth_result['euicc_ci_pk_id'],
+                server_certificate=auth_result['server_certificate'],
+                matching_id="04386-AGYFT-A74Y8-3F815",
+                tac=b'\x00\x00\x00\x00',
+            )
+            store_data(bf38, "BF38")
+            
+            # 6. PrepareDownload (BF21)
+            print("\n=== PrepareDownload (BF21) ===")
+            auth_client_result = smdp.authenticate_client(
+                transaction_id=auth_result['transaction_id'],
+                authenticate_server_response=b'', # 简化处理
+            )
+            bf21 = encode_bf21_prepare_download_request(
+                smdp_signed2=auth_client_result['smdp_signed2'],
+                smdp_signature2=auth_client_result['smdp_signature2'],
+                smdp_certificate=auth_client_result['smdp_certificate'],
+            )
+            # 捕获 BF21 响应
+            bf21_response = b''
+            offset = 0
+            while offset < len(bf21):
+                chunk = bf21[offset:offset + 255]
+                is_last = (offset + 255 >= len(bf21))
+                p1 = 0x91 if is_last else 0x11
+                resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, offset // 255, chunk)
+                sw = sw_to_string(sw1, sw2)
+                print(f"  [BF21] TX: {(0x80|channel):02X}E2{p1:02X}{offset // 255:02X}{len(chunk):02X}...")
+                print(f"  [BF21] RX: {bytes_to_hex(resp)} SW={sw}")
+                if sw != "9000":
+                    raise Exception(f"BF21 StoreData failed: {sw}")
+                bf21_response = resp
+                offset += 255
+            
+            # 7. LoadProfilePackage (BF36)
+            print("\n=== LoadProfilePackage (BF36) ===")
+            bpp = smdp.get_bound_profile_package(
+                transaction_id=auth_result['transaction_id'],
+                prepare_download_response=bf21_response,
+            )
+            store_data(bpp, "BF36")
+            
+            print("\n✓ Profile Download flow completed")
+    
+    except CardError as e:
+        logger.error(f"Card error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Test error: {e}", exc_info=True)
+        sys.exit(1)
+
+
 def cmd_test_euicc_info(args):
     """测试 eUICC 信息读取 - 先执行 IC1/IC2 初始化"""
     try:
@@ -465,6 +765,7 @@ def main():
     parser.add_argument('--test-ic-sequence', action='store_true')
     parser.add_argument('--test-euicc-info', action='store_true')
     parser.add_argument('--test-cleanup', action='store_true')
+    parser.add_argument('--test-profile-download', action='store_true')
     parser.add_argument('--interactive', action='store_true')
 
     args = parser.parse_args()
@@ -478,6 +779,7 @@ def main():
     elif args.test_ic_sequence: cmd_test_ic_sequence(args)
     elif args.test_euicc_info: cmd_test_euicc_info(args)
     elif args.test_cleanup: cmd_test_cleanup(args)
+    elif args.test_profile_download: cmd_test_profile_download(args)
     elif args.interactive: cmd_interactive(args)
     else: parser.print_help()
 

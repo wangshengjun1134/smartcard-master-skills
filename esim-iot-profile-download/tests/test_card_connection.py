@@ -233,16 +233,16 @@ def cmd_test_euicc_info(args):
             
             # GetEuiccInfo1 (BF20)
             print("=== GetEuiccInfo1 (BF20) ===")
-            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00, 0x00]))
+            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00]))
             sw = sw_to_string(sw1, sw2)
-            print(f"  TX: {(0x80|channel):02X}E2910003BF200000")
+            print(f"  TX: {(0x80|channel):02X}E2910003BF2000")
             print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
-            
+
             # GetEuiccChallenge (BF2E)
             print("\n=== GetEuiccChallenge (BF2E) ===")
-            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00, 0x00]))
+            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00]))
             sw = sw_to_string(sw1, sw2)
-            print(f"  TX: {(0x80|channel):02X}E2910003BF2E0000")
+            print(f"  TX: {(0x80|channel):02X}E2910003BF2E00")
             print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
             
             print("\n✓ eUICC info completed")

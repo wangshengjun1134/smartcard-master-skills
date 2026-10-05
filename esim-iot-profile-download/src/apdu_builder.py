@@ -129,12 +129,14 @@ def es10_command(channel: int, ins: int, p1: int, p2: int, data: Optional[bytes]
 
 def get_euicc_info1(channel: int) -> ApduCommand:
     """GetEuiccInfo1 (BF20)"""
-    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00, 0x00]))
+    # Java: 81E2910003BF200000 -> Lc=03, Data=BF2000, Le=00
+    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x20, 0x00]))
 
 
 def get_euicc_challenge(channel: int) -> ApduCommand:
     """GetEuiccChallenge (BF2E)"""
-    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00, 0x00]))
+    # Java: 81E2910003BF2E0000 -> Lc=03, Data=BF2E00, Le=00
+    return es10_command(channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00]))
 
 
 def euicc_memory_reset(channel: int) -> ApduCommand:

@@ -160,12 +160,21 @@ def cmd_test_ic_sequence(args):
             
             # Step 6: SELECT ISD-R
             # Java: 01A4040010A0000005591010FFFFFFFF8900000100 -> SW=9000
+            # 但卡可能返回 61XX，需要 GET RESPONSE
             print(f"\n=== Step 6: SELECT ISD-R (ch=0x{channel:02X}) ===")
-            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
             resp, sw1, sw2 = card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
             sw = sw_to_string(sw1, sw2)
             print(f"  TX: {channel:02X}A4040010{isdr.hex().upper()}")
             print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
+            
+            # 处理 61XX (GET RESPONSE)
+            if sw.startswith("61"):
+                le = sw2
+                resp, sw1, sw2 = card.transmit(channel, 0xC0, 0x00, 0x00, le=le)
+                sw = sw_to_string(sw1, sw2)
+                print(f"  TX: {channel:02X}C00000{le:02X} (GET RESPONSE)")
+                print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
             
             print("\n✓ IC1/IC2 completed")
     

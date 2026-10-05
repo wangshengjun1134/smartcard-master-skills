@@ -137,12 +137,14 @@ class CardReader:
         
         try:
             # 构建 APDU
-            # 对于 T0 协议，MANAGE_CHANNEL 需要特殊处理
+            # pyscard 2.x T0 协议特殊处理：
+            # - MANAGE_CHANNEL (00 70) 在 T0 下需要使用 00 70 00 00 01 格式（Le=01，不带数据）
             if cla == 0x00 and ins == 0x70:
-                # MANAGE_CHANNEL: 00 70 P1 P2 [Lc] Data
-                # T0 协议下，如果只有 1 字节数据，格式为: 00 70 P1 P2 01 Data
-                if data and len(data) == 1 and le is None:
-                    apdu = bytes([cla, ins, p1, p2, 0x01, data[0]])
+                # MANAGE_CHANNEL: 00 70 P1 P2 [Le]
+                # T0 协议下，打开新通道使用 P1=0x00, P2=0x00, Le=0x01
+                if p1 == 0x00 and p2 == 0x00 and (data is None or (len(data) == 1 and data[0] == 0x01)):
+                    # 打开下一个可用通道: 00 70 00 00 01
+                    apdu = bytes([cla, ins, p1, p2, 0x01])
                 else:
                     apdu = bytes([cla, ins, p1, p2])
                     if data:
@@ -159,9 +161,9 @@ class CardReader:
                     apdu = bytes([cla, ins, p1, p2])
                     if le is not None:
                         apdu += bytes([le])
-            
+
             logger.debug(f"TX: {apdu.hex().upper()}")
-            
+
             # 发送 APDU
             response, sw1, sw2 = self.connection.transmit(list(apdu))
             

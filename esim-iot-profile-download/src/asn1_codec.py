@@ -275,33 +275,71 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
         raise Asn1CodecError(f"Expected tag A0 or A1, got {response[offset]:02X}")
     
     offset += 1
-    euicc_signed2_len = response[offset]
+    # 解析 euiccSigned2 length
+    euicc_signed2_len_byte = response[offset]
     offset += 1
+    if euicc_signed2_len_byte & 0x80:
+        num_bytes = euicc_signed2_len_byte & 0x7F
+        euicc_signed2_len = 0
+        for i in range(num_bytes):
+            euicc_signed2_len = (euicc_signed2_len << 8) | response[offset]
+            offset += 1
+        # 如果 euicc_signed2_len > 127，说明是短格式 length
+        if euicc_signed2_len > 127 and euicc_signed2_len_byte == 0x81:
+            # 短格式 length: 0x8C = 140
+            euicc_signed2_len = response[offset - 1]
+            offset -= 1
+    else:
+        euicc_signed2_len = euicc_signed2_len_byte
+    
     euicc_signed2_data = response[offset:offset + euicc_signed2_len]
     offset += euicc_signed2_len
     
     # 解析 euiccSigned2 内部结构
+    # 跳过 SEQUENCE tag 和 length
+    seq_offset = 0
+    if euicc_signed2_data[seq_offset] == 0x30:
+        seq_offset += 1
+        seq_len_byte = euicc_signed2_data[seq_offset]
+        seq_offset += 1
+        if seq_len_byte & 0x80:
+            num_bytes = seq_len_byte & 0x7F
+            for i in range(num_bytes):
+                seq_offset += 1
+    
     # [0] transactionId
-    if euicc_signed2_data[0] == 0x80:
-        tid_len = euicc_signed2_data[1]
-        tid_offset = 2
-        result['transaction_id'] = euicc_signed2_data[tid_offset:tid_offset + tid_len].hex().upper()
-        tid_offset += tid_len
+    if euicc_signed2_data[seq_offset] == 0x80:
+        seq_offset += 1
+        tid_len = euicc_signed2_data[seq_offset]
+        seq_offset += 1
+        result['transaction_id'] = euicc_signed2_data[seq_offset:seq_offset + tid_len].hex().upper()
+        seq_offset += tid_len
         
         # [5F49] euiccOtpk (Application-Specific tag 73 = 0x5F49)
-        if tid_offset < len(euicc_signed2_data):
-            if euicc_signed2_data[tid_offset] == 0x5F and tid_offset + 1 < len(euicc_signed2_data):
-                if euicc_signed2_data[tid_offset + 1] == 0x49:
-                    otpk_len = euicc_signed2_data[tid_offset + 2]
-                    otpk_offset = tid_offset + 3
-                    result['euicc_otpk'] = euicc_signed2_data[otpk_offset:otpk_offset + otpk_len]
+        if seq_offset < len(euicc_signed2_data):
+            if euicc_signed2_data[seq_offset] == 0x5F and seq_offset + 1 < len(euicc_signed2_data):
+                if euicc_signed2_data[seq_offset + 1] == 0x49:
+                    seq_offset += 2
+                    otpk_len = euicc_signed2_data[seq_offset]
+                    seq_offset += 1
+                    result['euicc_otpk'] = euicc_signed2_data[seq_offset:seq_offset + otpk_len]
     
     # 解析 euiccSignature2 (tag 5F37 = Application-Specific [55])
     if offset < len(response) and response[offset] == 0x5F:
         if offset + 1 < len(response) and response[offset + 1] == 0x37:
-            sig_len = response[offset + 2]
-            sig_offset = offset + 3
-            result['euicc_signature2'] = response[sig_offset:sig_offset + sig_len]
+            offset += 2
+            # 解析 length
+            sig_len_byte = response[offset]
+            offset += 1
+            if sig_len_byte & 0x80:
+                num_bytes = sig_len_byte & 0x7F
+                sig_len = 0
+                for i in range(num_bytes):
+                    sig_len = (sig_len << 8) | response[offset]
+                    offset += 1
+            else:
+                sig_len = sig_len_byte
+            result['euicc_signature2'] = response[offset:offset + sig_len]
     
     return result
 

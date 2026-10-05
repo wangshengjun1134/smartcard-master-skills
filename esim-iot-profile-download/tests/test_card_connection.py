@@ -183,6 +183,207 @@ def cmd_test_ic_sequence(args):
         sys.exit(1)
 
 
+def cmd_test_cleanup(args):
+    """测试 Cleanup 流程 - 严格按 Java 日志执行序列"""
+    try:
+        reader_name = args.reader if args.reader else None
+        
+        with CardReader(reader_name) as card:
+            print(f"Reader: {card.get_reader_name()}")
+            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
+            print()
+            
+            # IC1/IC2 初始化
+            print("=== IC1/IC2 Initialization ===")
+            
+            # SELECT MF
+            resp, sw1, sw2 = card.transmit(0x00, 0xA4, 0x00, 0x04, bytes([0x3F, 0x00]))
+            sw = sw_to_string(sw1, sw2)
+            print(f"  SELECT MF: SW={sw}")
+            
+            # TERMINAL CAPABILITY
+            resp, sw1, sw2 = card.transmit(0x80, 0xAA, 0x00, 0x00, bytes([0xA9, 0x05, 0x81, 0x00, 0x83, 0x01, 0x07]))
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TERMINAL CAPABILITY: SW={sw}")
+            
+            # TERMINAL PROFILE
+            tp = bytes([0xFF]*3 + [0x7F, 0x9D, 0x00, 0xDF, 0xBF, 0x00, 0x00, 0x1F, 0xE2, 0x00, 0x00, 0x00, 0xC7, 0xEB, 0x00, 0x00, 0x01, 0x68, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00])
+            resp, sw1, sw2 = card.transmit(0x80, 0x10, 0x00, 0x00, tp)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TERMINAL PROFILE: SW={sw}")
+            
+            # STATUS
+            resp, sw1, sw2 = card.transmit(0x80, 0xF2, 0x00, 0x0C)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  STATUS: SW={sw}")
+            
+            # MANAGE_CHANNEL_OPEN
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            sw = sw_to_string(sw1, sw2)
+            channel = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL: SW={sw} Channel={channel}")
+            
+            # SELECT ISD-R
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            resp, sw1, sw2 = card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  SELECT ISD-R: SW={sw}")
+            
+            print()
+            
+            # === Cleanup 流程 ===
+            print("=== Cleanup 流程 ===")
+            
+            # Step 1: EuiccMemoryReset (BF34)
+            # Java: 81E2910007BF3404820205E0 -> RESP: BF3403800101 SW=9000
+            print("\n--- Step 1: EuiccMemoryReset (BF34) ---")
+            bf34_data = bytes([0xBF, 0x34, 0x04, 0x82, 0x02, 0x05, 0xE0])
+            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bf34_data)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TX: {(0x80|channel):02X}E2910007{bf34_data.hex().upper()}")
+            print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
+            
+            # Step 2: ListNotification (BF28)
+            # Java: 81E2910003BF280000 -> RESP: BF2802A000 SW=9000
+            print("\n--- Step 2: ListNotification (BF28) ---")
+            bf28_data = bytes([0xBF, 0x28, 0x00, 0x00])
+            resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bf28_data)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TX: {(0x80|channel):02X}E2910003{bf28_data.hex().upper()}")
+            print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
+            
+            # Step 3: RemoveNotification (BF30) - 根据 ListNotification 响应动态生成
+            # Java 日志中 ListNotification 返回 BF2802A000，没有 notification sequence，所以不需要 RemoveNotification
+            # 但如果返回 A0 开头的 sequence，需要发送 BF30 命令
+            print("\n--- Step 3: RemoveNotification (BF30) ---")
+            if resp and len(resp) > 0:
+                # 解析 ListNotification 响应，提取 notification sequences
+                sequences = _extract_notification_sequences(resp)
+                if sequences:
+                    print(f"  Found {len(sequences)} notification(s)")
+                    for seq in sequences:
+                        bf30_data = bytes([0xBF, 0x30, 0x04, 0x80, 0x02]) + seq
+                        resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bf30_data)
+                        sw = sw_to_string(sw1, sw2)
+                        print(f"  TX: {(0x80|channel):02X}E2910007{bf30_data.hex().upper()}")
+                        print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
+                else:
+                    print("  No notifications to remove")
+            else:
+                print("  Empty response from ListNotification")
+            
+            print("\n✓ Cleanup completed")
+    
+    except CardError as e:
+        logger.error(f"Card error: {e}")
+        sys.exit(1)
+
+
+def _extract_notification_sequences(response: bytes) -> list:
+    """从 ListNotification 响应提取 notification sequences"""
+    sequences = []
+    if not response or len(response) < 2:
+        return sequences
+    
+    # 简单解析：查找 A0 tag (notification list)
+    # 完整实现应使用 pyasn1 解析 BER-TLV
+    offset = 0
+    while offset < len(response):
+        tag = response[offset]
+        offset += 1
+        
+        if tag == 0xA0:
+            # 找到 notification list
+            length = response[offset]
+            offset += 1
+            list_data = response[offset:offset + length]
+            
+            # 解析每个 notification
+            list_offset = 0
+            while list_offset < len(list_data):
+                notif_tag = list_data[list_offset]
+                list_offset += 1
+                
+                if notif_tag == 0xBF and list_offset < len(list_data) and list_data[list_offset] == 0x2F:
+                    # 找到 BF2F (notification)
+                    list_offset += 1
+                    notif_length = list_data[list_offset]
+                    list_offset += 1
+                    notif_data = list_data[list_offset:list_offset + notif_length]
+                    
+                    # 提取 sequence (80 tag)
+                    notif_offset = 0
+                    while notif_offset < len(notif_data):
+                        if notif_data[notif_offset] == 0x80 and notif_offset + 2 < len(notif_data):
+                            seq_length = notif_data[notif_offset + 1]
+                            if seq_length == 2:
+                                sequences.append(notif_data[notif_offset + 2:notif_offset + 2 + seq_length])
+                            notif_offset += 2 + seq_length
+                        else:
+                            notif_offset += 1
+                    
+                    list_offset += notif_length
+                else:
+                    list_offset += 1
+            
+            offset += length
+        else:
+            # 跳过未知 tag
+            if offset < len(response):
+                length = response[offset]
+                offset += 1 + length
+    
+    return sequences
+
+
+def cmd_interactive(args):
+    try:
+        reader_name = args.reader if args.reader else None
+        
+        with CardReader(reader_name) as card:
+            print(f"Reader: {card.get_reader_name()}")
+            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
+            print()
+            print("Interactive mode. Type 'quit' to exit.")
+            print()
+            
+            while True:
+                try:
+                    apdu_input = input("APDU> ").strip()
+                    if apdu_input.lower() in ('quit', 'exit', 'q'):
+                        break
+                    if not apdu_input:
+                        continue
+                    
+                    apdu_bytes = hex_to_bytes(apdu_input)
+                    if len(apdu_bytes) < 4:
+                        print("Error: APDU must be at least 4 bytes")
+                        continue
+                    
+                    cla, ins, p1, p2 = apdu_bytes[0], apdu_bytes[1], apdu_bytes[2], apdu_bytes[3]
+                    data, le = None, None
+                    if len(apdu_bytes) > 4:
+                        lc = apdu_bytes[4]
+                        if lc > 0 and len(apdu_bytes) > 5:
+                            data = apdu_bytes[5:5+lc]
+                        if len(apdu_bytes) > 5 + lc:
+                            le = apdu_bytes[5 + lc]
+                    
+                    resp, sw1, sw2 = card.transmit(cla, ins, p1, p2, data, le)
+                    print(f"  TX: {apdu_input.upper()}")
+                    print(f"  RX: {bytes_to_hex(resp)} SW={sw_to_string(sw1, sw2)}")
+                except KeyboardInterrupt:
+                    break
+                except Exception as e:
+                    print(f"Error: {e}")
+            
+            print("\nExiting")
+    
+    except CardError as e:
+        logger.error(f"Card error: {e}")
+        sys.exit(1)
+
+
 def cmd_test_euicc_info(args):
     """测试 eUICC 信息读取 - 先执行 IC1/IC2 初始化"""
     try:
@@ -237,7 +438,7 @@ def cmd_test_euicc_info(args):
             sw = sw_to_string(sw1, sw2)
             print(f"  TX: {(0x80|channel):02X}E2910003BF2000")
             print(f"  RX: {bytes_to_hex(resp)} SW={sw}")
-
+            
             # GetEuiccChallenge (BF2E)
             print("\n=== GetEuiccChallenge (BF2E) ===")
             resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, 0x91, 0x00, bytes([0xBF, 0x2E, 0x00]))
@@ -252,77 +453,31 @@ def cmd_test_euicc_info(args):
         sys.exit(1)
 
 
-def cmd_interactive(args):
-    try:
-        reader_name = args.reader if args.reader else None
-        
-        with CardReader(reader_name) as card:
-            print(f"Reader: {card.get_reader_name()}")
-            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
-            print()
-            print("Interactive mode. Type 'quit' to exit.")
-            print()
-            
-            while True:
-                try:
-                    apdu_input = input("APDU> ").strip()
-                    if apdu_input.lower() in ('quit', 'exit', 'q'):
-                        break
-                    if not apdu_input:
-                        continue
-                    
-                    apdu_bytes = hex_to_bytes(apdu_input)
-                    if len(apdu_bytes) < 4:
-                        print("Error: APDU must be at least 4 bytes")
-                        continue
-                    
-                    cla, ins, p1, p2 = apdu_bytes[0], apdu_bytes[1], apdu_bytes[2], apdu_bytes[3]
-                    data, le = None, None
-                    if len(apdu_bytes) > 4:
-                        lc = apdu_bytes[4]
-                        if lc > 0 and len(apdu_bytes) > 5:
-                            data = apdu_bytes[5:5+lc]
-                        if len(apdu_bytes) > 5 + lc:
-                            le = apdu_bytes[5 + lc]
-                    
-                    resp, sw1, sw2 = card.transmit(cla, ins, p1, p2, data, le)
-                    print(f"  TX: {apdu_input.upper()}")
-                    print(f"  RX: {bytes_to_hex(resp)} SW={sw_to_string(sw1, sw2)}")
-                except KeyboardInterrupt:
-                    break
-                except Exception as e:
-                    print(f"Error: {e}")
-            
-            print("\nExiting")
-    
-    except CardError as e:
-        logger.error(f"Card error: {e}")
-        sys.exit(1)
-
-
 def main():
     parser = argparse.ArgumentParser(description='eSIM IoT Profile Download - Card Test')
     parser.add_argument('--reader', '-r', help='Reader name')
     parser.add_argument('--channel', '-c', type=int, default=1, help='Logical channel')
     parser.add_argument('--debug', '-d', action='store_true', help='Debug mode')
-    
+
     parser.add_argument('--list-readers', action='store_true')
     parser.add_argument('--connect', action='store_true')
     parser.add_argument('--apdu', type=str)
     parser.add_argument('--test-ic-sequence', action='store_true')
     parser.add_argument('--test-euicc-info', action='store_true')
+    parser.add_argument('--test-cleanup', action='store_true')
     parser.add_argument('--interactive', action='store_true')
-    
+
     args = parser.parse_args()
-    
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     if args.list_readers: cmd_list_readers(args)
     elif args.connect: cmd_connect(args)
     elif args.apdu: cmd_transmit_apdu(args)
     elif args.test_ic_sequence: cmd_test_ic_sequence(args)
     elif args.test_euicc_info: cmd_test_euicc_info(args)
+    elif args.test_cleanup: cmd_test_cleanup(args)
     elif args.interactive: cmd_interactive(args)
     else: parser.print_help()
 

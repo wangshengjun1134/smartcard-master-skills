@@ -41,3 +41,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# 连线执行日志（测试产物）
+tests/card_run_*.log

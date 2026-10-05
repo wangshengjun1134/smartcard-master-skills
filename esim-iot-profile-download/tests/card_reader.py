@@ -119,7 +119,7 @@ class CardReader:
     def transmit(self, cla: int, ins: int, p1: int, p2: int, 
                  data: Optional[bytes] = None, le: Optional[int] = None) -> Tuple[bytes, int, int]:
         """
-        发送 APDU 命令并接收响应
+        发送 APDU 命令并接收响应（自动处理 61XX GET RESPONSE）
         
         Args:
             cla: CLA 字节
@@ -161,17 +161,26 @@ class CardReader:
                     apdu = bytes([cla, ins, p1, p2])
                     if le is not None:
                         apdu += bytes([le])
-
+            
             logger.debug(f"TX: {apdu.hex().upper()}")
-
+            
             # 发送 APDU
             response, sw1, sw2 = self.connection.transmit(list(apdu))
             
             response_bytes = bytes(response) if response else b''
             logger.debug(f"RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
             
+            # 自动处理 61XX (GET RESPONSE)
+            if sw1 == 0x61:
+                le = sw2
+                logger.debug(f"  -> GET RESPONSE (len={le})")
+                gr_apdu = bytes([cla, 0xC0, 0x00, 0x00, le])
+                response, sw1, sw2 = self.connection.transmit(list(gr_apdu))
+                response_bytes = bytes(response) if response else b''
+                logger.debug(f"  RX: {response_bytes.hex().upper()} SW={sw1:02X}{sw2:02X}")
+            
             return response_bytes, sw1, sw2
-        
+
         except Exception as e:
             raise CardError(f"APDU transmit failed: {e}")
     

@@ -184,13 +184,51 @@ def cmd_test_ic_sequence(args):
 
 
 def cmd_test_euicc_info(args):
+    """测试 eUICC 信息读取 - 先执行 IC1/IC2 初始化"""
     try:
         reader_name = args.reader if args.reader else None
-        channel = args.channel if args.channel else 1
         
         with CardReader(reader_name) as card:
             print(f"Reader: {card.get_reader_name()}")
-            print(f"Channel: {channel}")
+            print(f"ATR: {bytes_to_hex(card.get_atr()) if card.get_atr() else 'N/A'}")
+            print()
+            
+            # IC1/IC2 初始化
+            print("=== IC1/IC2 Initialization ===")
+            
+            # SELECT MF
+            resp, sw1, sw2 = card.transmit(0x00, 0xA4, 0x00, 0x04, bytes([0x3F, 0x00]))
+            sw = sw_to_string(sw1, sw2)
+            print(f"  SELECT MF: SW={sw}")
+            
+            # TERMINAL CAPABILITY
+            resp, sw1, sw2 = card.transmit(0x80, 0xAA, 0x00, 0x00, bytes([0xA9, 0x05, 0x81, 0x00, 0x83, 0x01, 0x07]))
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TERMINAL CAPABILITY: SW={sw}")
+            
+            # TERMINAL PROFILE
+            tp = bytes([0xFF]*3 + [0x7F, 0x9D, 0x00, 0xDF, 0xBF, 0x00, 0x00, 0x1F, 0xE2, 0x00, 0x00, 0x00, 0xC7, 0xEB, 0x00, 0x00, 0x01, 0x68, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00])
+            resp, sw1, sw2 = card.transmit(0x80, 0x10, 0x00, 0x00, tp)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  TERMINAL PROFILE: SW={sw}")
+            
+            # STATUS
+            resp, sw1, sw2 = card.transmit(0x80, 0xF2, 0x00, 0x0C)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  STATUS: SW={sw}")
+            
+            # MANAGE_CHANNEL_OPEN
+            resp, sw1, sw2 = card.transmit(0x00, 0x70, 0x00, 0x00, bytes([0x01]))
+            sw = sw_to_string(sw1, sw2)
+            channel = resp[0] if resp and len(resp) > 0 else 1
+            print(f"  MANAGE_CHANNEL: SW={sw} Channel={channel}")
+            
+            # SELECT ISD-R
+            isdr = bytes([0xA0, 0x00, 0x00, 0x05, 0x59, 0x10, 0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x00, 0x00, 0x01, 0x00])
+            resp, sw1, sw2 = card.transmit(channel, 0xA4, 0x04, 0x00, isdr)
+            sw = sw_to_string(sw1, sw2)
+            print(f"  SELECT ISD-R: SW={sw}")
+            
             print()
             
             # GetEuiccInfo1 (BF20)

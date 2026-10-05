@@ -410,14 +410,20 @@ def cmd_test_profile_download(args):
         
         upp_file = os.path.join(profiles_dir, 'PROFILE_OPERATIONAL1_8929901012345678905F.HEX')
         upp_payload = bytes.fromhex(open(upp_file, 'r').read().strip().replace(" ", "").replace("\n", ""))
-        
+        icon_file = os.path.join(profiles_dir, 'icon1.png')
+        icon_payload = open(icon_file, 'rb').read() if os.path.exists(icon_file) else None
+
         packages = ProfilePackageStore()
         packages.save(ProfilePackageTemplate(
             matching_id="04386-AGYFT-A74Y8-3F815",
             profile_id="A0000005591010FFFFFFFF8900001000",
-            profile_name="IoT Profile",
+            profile_name="Operational Profile Name 1",
             iccid="8929901012345678905",
+            service_provider_name="SP Name 1",
+            profile_class=2,
             payload=upp_payload,
+            icon=icon_payload,
+            icon_type=1 if icon_payload else -1,
         ))
         
         smdp = LocalSmdpPlus(packages, PkiIdentity(dp_auth_key, [dp_auth_cert]), PkiIdentity(dp_pb_key, [dp_pb_cert]), ci_cert)
@@ -530,8 +536,29 @@ def cmd_test_profile_download(args):
                 transaction_id=auth_result['transaction_id'],
                 prepare_download_response=bf21_response,
             )
-            store_data(bpp, "BF36")
-            
+            # BPP 必须按 ASN.1 层次边界切成 StoreData 对象（块号每对象从 0 重启）
+            from src.bpp_codec import encode_bpp_store_objects
+            bf36_resp = b''
+            for obj in encode_bpp_store_objects(bpp):
+                off = 0
+                blk = 0
+                while True:
+                    chunk = obj[off:off + 255]
+                    off += 255
+                    last = off >= len(obj)
+                    p1 = 0x91 if last else 0x11
+                    resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, blk, chunk)
+                    sw = sw_to_string(sw1, sw2)
+                    print(f"  [BF36] obj-blk{blk} TX: {(0x80|channel):02X}E2{p1:02X}{blk:02X}{len(chunk):02X}...")
+                    print(f"  [BF36] RX: {bytes_to_hex(resp)} SW={sw}")
+                    if sw != "9000":
+                        raise Exception(f"BF36 StoreData failed: {sw}")
+                    bf36_resp = resp
+                    blk += 1
+                    if last:
+                        break
+            print(f"  [BF36] final response: {bytes_to_hex(bf36_resp)}")
+
             print("\n✓ Profile Download flow completed")
     
     except CardError as e:
@@ -568,14 +595,20 @@ def cmd_test_profile_download(args):
         
         upp_file = os.path.join(profiles_dir, 'PROFILE_OPERATIONAL1_8929901012345678905F.HEX')
         upp_payload = bytes.fromhex(open(upp_file, 'r').read().strip().replace(" ", "").replace("\n", ""))
-        
+        icon_file = os.path.join(profiles_dir, 'icon1.png')
+        icon_payload = open(icon_file, 'rb').read() if os.path.exists(icon_file) else None
+
         packages = ProfilePackageStore()
         packages.save(ProfilePackageTemplate(
             matching_id="04386-AGYFT-A74Y8-3F815",
             profile_id="A0000005591010FFFFFFFF8900001000",
-            profile_name="IoT Profile",
+            profile_name="Operational Profile Name 1",
             iccid="8929901012345678905",
+            service_provider_name="SP Name 1",
+            profile_class=2,
             payload=upp_payload,
+            icon=icon_payload,
+            icon_type=1 if icon_payload else -1,
         ))
         
         smdp = LocalSmdpPlus(packages, PkiIdentity(dp_auth_key, [dp_auth_cert]), PkiIdentity(dp_pb_key, [dp_pb_cert]), ci_cert)
@@ -756,8 +789,29 @@ def cmd_test_profile_download(args):
                 transaction_id=auth_result['transaction_id'],
                 prepare_download_response=bf21_response,
             )
-            store_data(bpp, "BF36")
-            
+            # BPP 必须按 ASN.1 层次边界切成 StoreData 对象（块号每对象从 0 重启）
+            from src.bpp_codec import encode_bpp_store_objects
+            bf36_resp = b''
+            for obj in encode_bpp_store_objects(bpp):
+                off = 0
+                blk = 0
+                while True:
+                    chunk = obj[off:off + 255]
+                    off += 255
+                    last = off >= len(obj)
+                    p1 = 0x91 if last else 0x11
+                    resp, sw1, sw2 = card.transmit(0x80 | channel, 0xE2, p1, blk, chunk)
+                    sw = sw_to_string(sw1, sw2)
+                    print(f"  [BF36] obj-blk{blk} TX: {(0x80|channel):02X}E2{p1:02X}{blk:02X}{len(chunk):02X}...")
+                    print(f"  [BF36] RX: {bytes_to_hex(resp)} SW={sw}")
+                    if sw != "9000":
+                        raise Exception(f"BF36 StoreData failed: {sw}")
+                    bf36_resp = resp
+                    blk += 1
+                    if last:
+                        break
+            print(f"  [BF36] final response: {bytes_to_hex(bf36_resp)}")
+
             print("\n✓ Profile Download flow completed")
     
     except CardError as e:

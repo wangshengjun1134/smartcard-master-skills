@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, EllipticCurvePrivateKey, EllipticCurvePublicKey
 from cryptography.hazmat.primitives.kdf.x963kdf import X963KDF
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.keywrap import UnwrapAes, WrapAes
+from cryptography.hazmat.primitives.keywrap import aes_key_wrap, aes_key_unwrap
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature, decode_dss_signature
 import os
@@ -88,20 +88,18 @@ def derive_keys_x963(
         raise CryptoError(f"X9.63 KDF derivation failed: {e}")
 
 
-def aes_key_wrap(key: bytes, data: bytes) -> bytes:
+def wrap_key(key: bytes, data: bytes) -> bytes:
     """AES 密钥包装 (RFC 3394)"""
     try:
-        wrapper = WrapAes(key)
-        return wrapper.wrap(data)
+        return aes_key_wrap(key, data, backend=default_backend())
     except Exception as e:
         raise CryptoError(f"AES key wrap failed: {e}")
 
 
-def aes_key_unwrap(key: bytes, wrapped_data: bytes) -> bytes:
+def unwrap_key(key: bytes, wrapped_data: bytes) -> bytes:
     """AES 密钥解包装 (RFC 3394)"""
     try:
-        unwrapper = UnwrapAes(key)
-        return unwrapper.unwrap(wrapped_data)
+        return aes_key_unwrap(key, wrapped_data, backend=default_backend())
     except Exception as e:
         raise CryptoError(f"AES key unwrap failed: {e}")
 

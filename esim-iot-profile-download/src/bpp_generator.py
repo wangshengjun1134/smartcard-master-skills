@@ -1,7 +1,7 @@
 """BPP (Bound Profile Package) 生成器模块"""
 
 from typing import Optional, Tuple
-from pyasn1.type import univ, namedtype, tag
+from pyasn1.type import univ, namedtype, tag, char
 from pyasn1.codec.der import encoder, decoder
 from pyasn1.error import PyAsn1Error
 
@@ -149,19 +149,19 @@ class BppGenerator:
             bpp = univ.Sequence(
                 componentType=namedtype.NamedTypes(
                     namedtype.NamedType('profileId', univ.OctetString()),
-                    namedtype.NamedType('profileName', univ.UTF8String()),
+                    namedtype.NamedType('profileName', char.UTF8String()),
                     namedtype.NamedType('iccid', univ.OctetString()),
-                    namedtype.OptionalNamedType('serviceProviderName', univ.UTF8String()),
+                    namedtype.OptionalNamedType('serviceProviderName', char.UTF8String()),
                     namedtype.DefaultedNamedType('profileClass', univ.Integer(0)),
                     namedtype.NamedType('encryptedPayload', univ.OctetString()),
                 )
             )
             
             bpp.setComponentByPosition(0, univ.OctetString(hex_to_bytes(profile_id)))
-            bpp.setComponentByPosition(1, univ.UTF8String(profile_name))
+            bpp.setComponentByPosition(1, char.UTF8String(profile_name))
             bpp.setComponentByPosition(2, univ.OctetString(iccid.encode('utf-8')))
             if service_provider_name:
-                bpp.setComponentByPosition(3, univ.UTF8String(service_provider_name))
+                bpp.setComponentByPosition(3, char.UTF8String(service_provider_name))
             bpp.setComponentByPosition(4, univ.Integer(profile_class))
             bpp.setComponentByPosition(5, univ.OctetString(encrypted_payload))
             

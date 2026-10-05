@@ -3,8 +3,10 @@
 from typing import List
 
 
-def bytes_to_hex(data: bytes) -> str:
-    """字节数组转十六进制字符串（大写）"""
+def bytes_to_hex(data) -> str:
+    """字节数组转十六进制字符串（兼容 list 和 bytes）"""
+    if isinstance(data, list):
+        data = bytes(data)
     return data.hex().upper()
 
 

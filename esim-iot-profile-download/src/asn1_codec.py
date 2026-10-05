@@ -1,7 +1,7 @@
 """ASN.1 DER 编解码模块 - 基于 pyasn1"""
 
 from typing import Optional, List, Dict, Any, Tuple
-from pyasn1.type import univ, namedtype, tag, constraint
+from pyasn1.type import univ, namedtype, tag, constraint, char
 from pyasn1.codec.der import encoder, decoder
 from pyasn1.error import PyAsn1Error
 
@@ -18,7 +18,7 @@ class OCTET_STRING(univ.OctetString):
     pass
 
 
-class UTF8String(univ.UTF8String):
+class UTF8String(char.UTF8String):
     """UTF8String"""
     pass
 
@@ -304,26 +304,66 @@ def encode_euicc_info1(
 def decode_euicc_info1(response: bytes) -> Dict[str, Any]:
     """
     解码 EuiccInfo1 (BF20 响应)
+    格式: BF20 <len> [2] <ver> [9] <ver_ids> [10] <sign_ids>
     """
-    try:
-        pdu, _ = decoder.decode(response)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode EuiccInfo1: {e}")
-    
     result = {}
+    if len(response) < 4:
+        raise Asn1CodecError("Response too short")
     
-    if pdu.getComponentPosition(0) is not None:
-        svn = pdu.getComponentByPosition(0)
-        result['svn'] = bytes(svn).decode('utf-8')
+    # 跳过 BF20 tag 和 length
+    offset = 2
+    data = response[offset:]
     
-    if pdu.getComponentPosition(1) is not None:
-        ver_ids = pdu.getComponentByPosition(1)
-        result['verification_ci_pk_ids'] = [bytes(id) for id in ver_ids]
+    # 解析 [2] version
+    if data[0] == 0x82:
+        offset = 1
+        ver_len = data[offset]
+        offset += 1
+        result['svn'] = data[offset:offset + ver_len].decode('utf-8')
+        offset += ver_len
+    else:
+        # 如果格式不对，尝试跳过
+        offset = 1
+        while offset < len(data) and data[offset] != 0x89 and data[offset] != 0x8A:
+            offset += 1
     
-    if pdu.getComponentPosition(2) is not None:
-        sign_ids = pdu.getComponentByPosition(2)
-        result['signing_ci_pk_ids'] = [bytes(id) for id in sign_ids]
+    # 解析 [9] verificationCiPkIds
+    if offset < len(data) and data[offset] == 0x89:
+        offset += 1
+        ver_len = data[offset]
+        offset += 1
+        ver_data = data[offset:offset + ver_len]
+        result['verification_ci_pk_ids'] = _parse_octet_string_set(ver_data)
+        offset += ver_len
     
+    # 解析 [10] signingCiPkIds
+    if offset < len(data) and data[offset] == 0x8A:
+        offset += 1
+        sign_len = data[offset]
+        offset += 1
+        sign_data = data[offset:offset + sign_len]
+        result['signing_ci_pk_ids'] = _parse_octet_string_set(sign_data)
+    
+    return result
+
+
+def _parse_octet_string_set(data: bytes) -> List[bytes]:
+    """解析 OCTET STRING SET"""
+    result = []
+    offset = 0
+    while offset < len(data):
+        tag = data[offset]
+        offset += 1
+        if tag == 0x04:  # OCTET STRING
+            length = data[offset]
+            offset += 1
+            result.append(data[offset:offset + length])
+            offset += length
+        else:
+            # 跳过未知 tag
+            if offset < len(data):
+                length = data[offset]
+                offset += 1 + length
     return result
 
 
@@ -332,16 +372,20 @@ def decode_euicc_info1(response: bytes) -> Dict[str, Any]:
 def decode_bf2e_challenge(response: bytes) -> bytes:
     """
     解码 GetEuiccChallenge 响应，提取 16 字节 challenge
+    格式: BF2E <len> <80 <16> <challenge>
     """
-    try:
-        pdu, _ = decoder.decode(response)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode EuiccChallenge: {e}")
+    if len(response) < 6:
+        raise Asn1CodecError("Response too short")
     
-    for i in range(pdu.getSize()):
-        component = pdu.getComponentByPosition(i)
-        if component is not None and len(bytes(component)) == 16:
-            return bytes(component)
+    # 跳过 BF2E tag (2 bytes) 和 length (1 byte)
+    offset = 3
+    # response[offset] is the inner tag (0x80)
+    if response[offset] == 0x80:
+        offset += 1
+        length = response[offset]
+        offset += 1
+        if length == 16 and len(response) >= offset + 16:
+            return response[offset:offset + 16]
     
     raise Asn1CodecError("BF2E response has no 16-byte challenge")
 

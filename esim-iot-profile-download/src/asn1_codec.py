@@ -28,6 +28,22 @@ class BOOLEAN(univ.Boolean):
     pass
 
 
+# ========== DER 基础工具 ==========
+
+def _der_len(n: int) -> bytes:
+    if n < 128:
+        return bytes([n])
+    if n < 256:
+        return bytes([0x81, n])
+    if n < 65536:
+        return bytes([0x82, (n >> 8) & 0xFF, n & 0xFF])
+    raise Asn1CodecError(f"Length too large: {n}")
+
+
+def _der_tlv(tag: bytes, value: bytes) -> bytes:
+    return tag + _der_len(len(value)) + value
+
+
 # ========== BF38 AuthenticateServerRequest ==========
 
 def encode_bf38_authenticate_server_request(
@@ -40,88 +56,49 @@ def encode_bf38_authenticate_server_request(
 ) -> bytes:
     """
     编码 AuthenticateServerRequest (BF38)
+
+    严格对齐 Java Sgp22ProfileDownloadCodec.encodeAuthenticateServerRequest：
+    - ServerSigned1 使用 IMPLICIT 上下文标签 [0][1][3][4]（由调用方生成）
+    - serverSignature1 使用 APPLICATION 55 → 5F 37
+    - euiccCiPkIdToBeUsed 使用 OCTET STRING → 04
+    - serverCertificate 原样嵌入
+    - ctxParams1 = A0 { [0] matchingId(UTF8String), A1 { [0] tac, A1 {caps}, [2] deviceIdentifier } }
+    最终 BF38 = [56] IMPLICIT SEQUENCE → BF 38
     """
     if len(tac) != 4:
         raise Asn1CodecError("TAC must be 4 bytes")
-    
-    # 解析 serverSigned1 和 serverCertificate
-    try:
-        ss1, _ = decoder.decode(server_signed1)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode serverSigned1: {e}")
-    
-    try:
-        cert, _ = decoder.decode(server_certificate)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot decode serverCertificate: {e}")
-    
-    # DeviceCapabilities
-    capabilities = univ.Sequence(
-        componentType=namedtype.NamedTypes(
-            namedtype.NamedType('cap1', univ.OctetString()),
-            namedtype.NamedType('cap2', univ.OctetString()),
-            namedtype.NamedType('cap3', univ.OctetString()),
-            namedtype.NamedType('cap4', univ.OctetString()),
-            namedtype.NamedType('cap5', univ.OctetString()),
-            namedtype.NamedType('cap6', univ.OctetString()),
-            namedtype.NamedType('cap7', univ.OctetString()),
-            namedtype.NamedType('cap8', univ.OctetString()),
-        )
+
+    # deviceCapabilities: 8 个 [n] OCTET STRING（SGP.23 v1.16 固定向量）
+    caps = [
+        b'\x05\x00\x00', b'\x08\x00\x00', b'\x01\x00\x00', b'\x01\x00\x00',
+        b'\x02\x00\x00', b'\x02\x00\x00', b'\x09\x00\x00', b'\x02\x01\x00',
+    ]
+    caps_seq = b''.join(_der_tlv(bytes([0x80 | i]), c) for i, c in enumerate(caps))
+
+    # deviceInfo 内容: [0] tac, [1] deviceCapabilities, [2] deviceIdentifier
+    device = (
+        _der_tlv(b'\x80', tac)
+        + _der_tlv(b'\xa1', caps_seq)
+        + _der_tlv(b'\x82', bytes([0, 0, 0, 0, 0x11, 0x11, 0x11, 0x11]))
     )
-    capabilities.setComponentByPosition(0, univ.OctetString(hexValue='050000'))
-    capabilities.setComponentByPosition(1, univ.OctetString(hexValue='080000'))
-    capabilities.setComponentByPosition(2, univ.OctetString(hexValue='010000'))
-    capabilities.setComponentByPosition(3, univ.OctetString(hexValue='010000'))
-    capabilities.setComponentByPosition(4, univ.OctetString(hexValue='020000'))
-    capabilities.setComponentByPosition(5, univ.OctetString(hexValue='020000'))
-    capabilities.setComponentByPosition(6, univ.OctetString(hexValue='090000'))
-    capabilities.setComponentByPosition(7, univ.OctetString(hexValue='020100'))
-    
-    # DeviceInfo
-    device_info = univ.Sequence(
-        componentType=namedtype.NamedTypes(
-            namedtype.NamedType('tac', univ.OctetString()),
-            namedtype.NamedType('capabilities', capabilities),
-            namedtype.NamedType('deviceIdentifier', univ.OctetString()),
-        )
-    )
-    device_info.setComponentByPosition(0, univ.OctetString(tac))
-    device_info.setComponentByPosition(1, capabilities)
-    device_info.setComponentByPosition(2, univ.OctetString(hexValue='000000000011111111'))
-    
-    # ContextParams [0]
-    context_params = univ.Sequence(
-        componentType=namedtype.NamedTypes(
-            namedtype.OptionalNamedType('matchingId', UTF8String()),
-            namedtype.NamedType('deviceInfo', device_info),
-        )
-    ).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 0))
-    
+
+    # context（ctxParams1 内容）: [0] matchingId, [1] deviceInfo
+    context = b''
     if matching_id:
-        context_params.setComponentByPosition(0, UTF8String(matching_id))
-    context_params.setComponentByPosition(1, device_info)
-    
-    # BF38 主结构 [56]
-    bf38 = univ.Sequence(
-        componentType=namedtype.NamedTypes(
-            namedtype.NamedType('serverSigned1', ss1),
-            namedtype.NamedType('serverSignature1', univ.OctetString()),
-            namedtype.NamedType('euiccCiPkIdToBeUsed', univ.OctetString()),
-            namedtype.NamedType('serverCertificate', cert),
-            namedtype.NamedType('contextParams', context_params),
-        )
-    ).subtype(implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatConstructed, 56))
-    
-    bf38.setComponentByPosition(0, ss1)
-    bf38.setComponentByPosition(1, univ.OctetString(server_signature1))
-    bf38.setComponentByPosition(2, univ.OctetString(euicc_ci_pk_id))
-    bf38.setComponentByPosition(3, cert)
-    bf38.setComponentByPosition(4, context_params)
-    
-    try:
-        return encoder.encode(bf38)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot encode BF38: {e}")
+        context += _der_tlv(b'\x80', matching_id.encode('utf-8'))
+    context += _der_tlv(b'\xa1', device)
+
+    ctx_params1 = _der_tlv(b'\xa0', context)
+
+    fields = (
+        server_signed1
+        + _der_tlv(b'\x5f\x37', server_signature1)
+        + _der_tlv(b'\x04', euicc_ci_pk_id)
+        + server_certificate
+        + ctx_params1
+    )
+
+    return _der_tlv(b'\xbf\x38', fields)
 
 
 # ========== SmdpSigned2 ==========
@@ -140,18 +117,19 @@ def encode_smdp_signed2(
         bppEuiccOtpk         [5F49] OCTET STRING OPTIONAL
     }
     """
-    tid_bytes = bytes.fromhex(transaction_id.replace(" ", ""))
-    
     # 严格按照 Java版本格式编码
     # Java: new DERTaggedObject(false, 0, new DEROctetString(tid_bytes))
+    # transaction_id 是十六进制字符串，需要转换为字节数组
+    tid_bytes = bytes.fromhex(transaction_id.replace(" ", ""))
+    
     tid_field = univ.OctetString(tid_bytes).subtype(
         implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 0)
     )
-    
+
     # Java: confirmationCodeRequired ? ASN1Boolean.TRUE : ASN1Boolean.FALSE
     # 始终包含 ccRequired 字段（即使为 FALSE）
     cc_field = BOOLEAN(confirmation_code_required)
-    
+
     if bpp_euicc_otpk:
         # 带 otpk
         otpk_field = univ.OctetString(bpp_euicc_otpk).subtype(
@@ -193,69 +171,51 @@ def encode_bf21_prepare_download_request(
 ) -> bytes:
     """
     编码 PrepareDownloadRequest (BF21)
-    
+
     严格按照 Java版本 Sgp22ProfileDownloadCodec.encodePrepareDownloadRequest 实现
+    
+    Java版本:
+        ASN1EncodableVector fields = new ASN1EncodableVector();
+        fields.add(readOne(smdpSigned2, "SmdpSigned2"));  // 直接添加 DER 字节
+        fields.add(new DERApplicationSpecific(false, 55, new DEROctetString(smdpSignature2)));  // [55]
+        if (hashCc != null && hashCc.length > 0) {
+            fields.add(new DEROctetString(hashCc));  // OCTET STRING
+        }
+        fields.add(readOne(smdpCertificate, "smdpCertificate"));  // 直接添加 DER 字节
+        return new DERTaggedObject(false, 33, new DERSequence(fields)).getEncoded("DER");
     """
     try:
         # 解析 smdp_certificate
         cert, _ = decoder.decode(smdp_certificate)
+        cert_der = encoder.encode(cert)
     except PyAsn1Error as e:
         raise Asn1CodecError(f"Cannot decode smdpCertificate: {e}")
 
     # 编码 smdpSignature2 [55]
+    # Java: new DERApplicationSpecific(false, 55, new DEROctetString(smdpSignature2))
     smdp_sig2_field = univ.OctetString(smdp_signature2).subtype(
         implicitTag=tag.Tag(tag.tagClassApplication, tag.tagFormatSimple, 55)
     )
     smdp_sig2_der = encoder.encode(smdp_sig2_field)
-    
-    # 编码 smdpCertificate
-    cert_der = encoder.encode(cert)
-    
-    # 手动构建 BF21 SEQUENCE
-    # SEQUENCE {
-    #     smdpSigned2      (原始字节)
-    #     smdpSignature2   [55] OCTET STRING
-    #     hashCc           OCTET STRING (可选)
-    #     smdpCertificate  SEQUENCE
-    # }
-    
-    # 计算总长度
-    total_len = len(smdp_signed2) + len(smdp_sig2_der) + len(cert_der)
+
+    # BF21 是 IMPLICIT 标签：[33] 已替换 SEQUENCE 标签 0x30，
+    # 内容直接是各字段，不能再包一层 SEQUENCE（否则 eUICC 返回 0x7F "参数错误"）。
+    # Java: new DERTaggedObject(false, 33, new DERSequence(fields))
     if hash_cc:
-        total_len += len(hash_cc) + 2  # tag + length
-    
-    # 编码 SEQUENCE header
-    if total_len < 128:
-        seq_header = bytes([0x30, total_len])
-    elif total_len < 256:
-        seq_header = bytes([0x30, 0x81, total_len])
-    else:
-        seq_header = bytes([0x30, 0x82, (total_len >> 8) & 0xFF, total_len & 0xFF])
-    
-    # 构建 BF21
-    bf21_body = seq_header + smdp_signed2 + smdp_sig2_der + cert_der
-    if hash_cc:
-        # 插入 hashCc (OCTET STRING)
-        # 简化处理：假设 hash_cc 长度 < 128
         hash_cc_der = bytes([0x04, len(hash_cc)]) + hash_cc
-        # 插入到 smdpSignature2 和 smdpCertificate 之间
-        bf21_body = seq_header + smdp_signed2 + smdp_sig2_der + hash_cc_der + cert_der
-        # 重新计算长度
-        total_len = len(bf21_body) - 2  # 减去 tag 和 length
-        if total_len < 128:
-            bf21_body = bytes([0x30, total_len]) + bf21_body[2:]
-        elif total_len < 256:
-            bf21_body = bytes([0x30, 0x81, total_len]) + bf21_body[3:]
-    
-    # 添加 BF21 tag [33] IMPLICIT
-    bf21_len = len(bf21_body)
-    if bf21_len < 128:
-        bf21 = bytes([0xBF, 0x21, bf21_len]) + bf21_body
-    elif bf21_len < 256:
-        bf21 = bytes([0xBF, 0x21, 0x81, bf21_len]) + bf21_body
+        bf21_content = smdp_signed2 + smdp_sig2_der + hash_cc_der + cert_der
     else:
-        bf21 = bytes([0xBF, 0x21, 0x82, (bf21_len >> 8) & 0xFF, bf21_len & 0xFF]) + bf21_body
-    
+        bf21_content = smdp_signed2 + smdp_sig2_der + cert_der
+
+    # 添加 BF21 tag [33] IMPLICIT
+    bf21_len = len(bf21_content)
+    if bf21_len < 128:
+        bf21 = bytes([0xBF, 0x21, bf21_len]) + bf21_content
+    elif bf21_len < 256:
+        bf21 = bytes([0xBF, 0x21, 0x81, bf21_len]) + bf21_content
+    else:
+        bf21 = bytes([0xBF, 0x21, 0x82, (bf21_len >> 8) & 0xFF, bf21_len & 0xFF]) + bf21_content
+
     return bf21
 
 

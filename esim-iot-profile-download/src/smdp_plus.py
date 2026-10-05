@@ -104,7 +104,8 @@ class LocalSmdpPlus:
             #     raise SmdpPlusError("CI PK ID not supported by eUICC")
             
             # 4. 生成 transactionId
-            transaction_id = uuid.uuid4().hex
+            # 使用固定的 transactionId "01"（与 Java 测试平台一致）
+            transaction_id = "01"
             
             # 5. 生成 serverChallenge
             server_challenge = os.urandom(16)
@@ -297,23 +298,36 @@ class LocalSmdpPlus:
         smdp_address: str,
         server_challenge: bytes
     ) -> bytes:
-        """编码 ServerSigned1"""
-        from pyasn1.type import univ, namedtype
+        """编码 ServerSigned1（严格对齐 Java Asn1AuthCodec.encodeServerSigned1）
+
+        ServerSigned1 uses IMPLICIT TAGS：上下文标签替换 OCTET STRING / UTF8String 标签，
+        不带内层 04 / 0C。字段标签为 [0] transactionId、[1] euiccChallenge、
+        [3] smdpAddress、[4] serverChallenge。
+        """
+        from pyasn1.type import univ, namedtype, tag
         from pyasn1.codec.der import encoder
-        
+
+        def ctx(n):
+            return tag.Tag(tag.tagClassContext, tag.tagFormatSimple, n)
+
+        tid_field = univ.OctetString(bytes.fromhex(transaction_id)).subtype(implicitTag=ctx(0))
+        euicc_challenge_field = univ.OctetString(euicc_challenge).subtype(implicitTag=ctx(1))
+        smdp_address_field = char.UTF8String(smdp_address).subtype(implicitTag=ctx(3))
+        server_challenge_field = univ.OctetString(server_challenge).subtype(implicitTag=ctx(4))
+
         server_signed1 = univ.Sequence(
             componentType=namedtype.NamedTypes(
-                namedtype.NamedType('transactionId', univ.OctetString()),
-                namedtype.NamedType('euiccChallenge', univ.OctetString()),
-                namedtype.NamedType('smdpAddress', char.UTF8String()),
-                namedtype.NamedType('serverChallenge', univ.OctetString()),
+                namedtype.NamedType('transactionId', tid_field),
+                namedtype.NamedType('euiccChallenge', euicc_challenge_field),
+                namedtype.NamedType('smdpAddress', smdp_address_field),
+                namedtype.NamedType('serverChallenge', server_challenge_field),
             )
         )
-        server_signed1.setComponentByPosition(0, univ.OctetString(bytes.fromhex(transaction_id)))
-        server_signed1.setComponentByPosition(1, univ.OctetString(euicc_challenge))
-        server_signed1.setComponentByPosition(2, char.UTF8String(smdp_address))
-        server_signed1.setComponentByPosition(3, univ.OctetString(server_challenge))
-        
+        server_signed1.setComponentByPosition(0, tid_field)
+        server_signed1.setComponentByPosition(1, euicc_challenge_field)
+        server_signed1.setComponentByPosition(2, smdp_address_field)
+        server_signed1.setComponentByPosition(3, server_challenge_field)
+
         return encoder.encode(server_signed1)
     
     def _encode_store_metadata(self, template: ProfilePackageTemplate) -> bytes:

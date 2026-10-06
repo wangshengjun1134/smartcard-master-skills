@@ -11,6 +11,5 @@
   "profile_name": "Operational Profile Name 1",
   "spn": "SP Name 1",
   "profile_class": 2,
-  "rounds": 1,
-  "resources_dir": "***REMOVED***/workspaces/smartcard/smartcard-master-skills/esim-iot-profile-download/resources"
+  "rounds": 1
 }

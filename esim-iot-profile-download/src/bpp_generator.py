@@ -215,27 +215,13 @@ class BppGenerator:
             raise BppGeneratorError(f"BPP signing failed: {e}")
     
     def segment_bpp(self, bpp_der: bytes, max_segment_size: int = 255) -> list:
-        """
-        将 BPP 分块（用于 StoreData 分段传输）
-        
-        Args:
-            bpp_der: BPP DER 编码
-            max_segment_size: 最大分段大小（默认 255 字节）
-        
+        """BPP 分块（BF36 StoreData 语义）
+
+        按 SGP.22 §2.5.5 先做 ASN.1 对象切分，再对每个对象各自 ≤max_segment_size 分块，
+        块号在每个对象内从 0 重启（对齐 Java encodeBoundProfilePackageCommands）。
+
         Returns:
-            分段列表 [(is_last, data), ...]
+            [(block_number, p1, data), ...]；p1 = 0x91 表示该对象最后一块
         """
-        segments = []
-        offset = 0
-        
-        while offset < len(bpp_der):
-            chunk = bpp_der[offset:offset + max_segment_size]
-            is_last = (offset + max_segment_size >= len(bpp_der))
-            segments.append((is_last, chunk))
-            offset += max_segment_size
-        
-        return segments
-
-
-# 导入 ec 模块
-from cryptography.hazmat.primitives.asymmetric import ec
+        from .bpp_codec import segment_bpp_store_objects
+        return segment_bpp_store_objects(bpp_der, max_segment_size)

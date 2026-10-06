@@ -1,0 +1,2 @@
+# 测试专用依赖（Skill 运行本身不需要 pyscard —— 读卡器由 Runtime 负责）
+pyscard>=2.2.0

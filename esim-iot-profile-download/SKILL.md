@@ -125,6 +125,24 @@ Runtime 只以 **`python <entry>`**（`ProcessPythonHost`）启动本技能，**
 | icon_type | number | 否 | 图标类型（1=PNG, 2=JPG, 0=无；默认按 `profiles/icon1.*` 自动识别） |
 | rounds | number | 否 | 循环轮次（默认 1，性能测试用） |
 | resources_dir | string | 否 | 证书/Profile 资源目录（默认 `SKILL_PACKAGE_PATH/resources`） |
+| upp_payload | string | 否 | 覆盖 UPP 载荷（十六进制文本或 base64） |
+| dp_auth_key | string | 否 | 覆盖 DPauth 私钥（PEM 文本或 base64 DER） |
+| dp_auth_cert | string | 否 | 覆盖 DPauth 证书（PEM 文本或 base64 DER） |
+| dp_pb_key | string | 否 | 覆盖 DP Profile Binding 私钥 |
+| dp_pb_cert | string | 否 | 覆盖 DP Profile Binding 证书 |
+| ci_cert | string | 否 | 覆盖 CI 根证书 |
+| eim_key | string | 否 | 覆盖 eIM 私钥（indirect 模式） |
+| eim_cert | string | 否 | 覆盖 eIM 证书（indirect 模式） |
+
+## 资源来源优先级
+
+证书/私钥/载荷的取值顺序：**输入参数注入 > `resources_dir` 包内文件**。
+
+- 包内默认：`resources/certs/`、`resources/profiles/` 下的测试证书与 UPP（开箱即用）
+- 外部注入：需要证书轮换 / 多租户 / 不随包携带密钥时，用上表中的 `dp_auth_key`…`eim_cert`、
+  `upp_payload` 覆盖；每个参数都接受 **PEM 文本**或 **base64 编码的 DER**
+- 只注入部分材料也可以（未注入的仍用包内默认）；某项缺失且未注入 → `FAILED ... 缺失：<路径>（可用输入参数 <名> 注入 ...）`
+- 本次执行用到的注入项会以 `INFO` 输出事件上报：`使用外部注入的材料: ...`
 
 ## 输出
 

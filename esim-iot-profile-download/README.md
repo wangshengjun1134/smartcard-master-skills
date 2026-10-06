@@ -71,6 +71,8 @@ bash scripts/setup-venv.sh     # 在技能包内创建 .venv 并安装 requireme
 
 字段完整说明见 [SKILL.md](SKILL.md#输入参数)。
 
+证书/私钥/载荷默认取包内 `resources/`，也可用输入参数外部注入覆盖（`dp_auth_key`…`eim_cert`、`upp_payload`，PEM 文本或 base64 DER），详见 [CERTIFICATE_GUIDE.md](CERTIFICATE_GUIDE.md#方式二外部注入可选覆盖包内默认)。
+
 ### 输出结果（`execution_finished.data`）
 
 ```json

@@ -72,6 +72,47 @@ resources_dir/
 
 ---
 
+## 方式二：外部注入（可选覆盖包内默认）
+
+适合证书轮换、多租户或不希望密钥随技能包发布的场景。**每一项都可单独注入，未注入的仍取包内默认**；
+值支持 **PEM 文本**或 **base64 编码的 DER**。
+
+```json
+{
+  "operation": "install_and_enable",
+  "mode": "indirect",
+  "eid": "89049032123451234512345678901235",
+  "smdp_address": "testsmdpplus1.example.com",
+  "matching_id": "04386-AGYFT-A74Y8-3F815",
+  "iccid": "8929901012345678905",
+  "profile_id": "A0000005591010FFFFFFFF8900001000",
+  "eim_id": "testeim1",
+
+  "dp_auth_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "dp_auth_cert": "MIIBkTCB+wIJALRiMLAh...",
+  "dp_pb_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "dp_pb_cert": "MIIBkTCB+wIJALRiMLAh...",
+  "ci_cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n",
+  "eim_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+  "eim_cert": "MIIBkTCB+wIJALRiMLAh...",
+
+  "upp_payload": "A040800102810103821447534D41..."
+}
+```
+
+| 参数 | 说明 |
+|------|------|
+| `dp_auth_key` / `dp_auth_cert` | DPauth 私钥 / 证书（InitiateAuthentication 签名） |
+| `dp_pb_key` / `dp_pb_cert` | DP Profile Binding 私钥 / 证书（BPP 签名） |
+| `ci_cert` | CI 根证书 |
+| `eim_key` / `eim_cert` | eIM 私钥 / 证书（indirect 模式必需） |
+| `upp_payload` | UPP 载荷（十六进制文本或 base64），覆盖 `profiles/` 下按 ICCID 匹配的文件 |
+
+来源优先级：输入注入 > `resources_dir` 包内文件；本次执行用到的注入项会以 `INFO` 输出事件上报
+（`使用外部注入的材料: ...`）。
+
+---
+
 ## 证书生成示例
 
 ### 使用 OpenSSL 生成测试证书

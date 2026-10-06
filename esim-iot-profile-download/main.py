@@ -17,9 +17,12 @@
 （`<package>/.venv`，见 `scripts/setup-venv.sh`）重新执行本进程。
 """
 
+import base64
+import binascii
 import json
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import logging
@@ -142,7 +145,13 @@ sys.path.insert(0, PACKAGE_DIR)
 from src.apdu_builder import ApduCommand
 from src.profile_download import ProfileDownloadFlow, ProfileDownloadError
 from src.smdp_plus import LocalSmdpPlus
-from src.pki_manager import PkiIdentity, load_private_key_from_pem, load_certificate_from_der
+from src.pki_manager import (
+    PkiIdentity,
+    load_private_key_from_pem,
+    load_private_key_from_der,
+    load_certificate_from_pem,
+    load_certificate_from_der,
+)
 from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
 from src.skill_actions import to_ipc
 from src.utils import validate_eid, validate_iccid, validate_matching_id
@@ -234,57 +243,123 @@ def default_resources_dir() -> str:
     return os.path.join(package_path, "resources")
 
 
-def load_identity(key_path: str, cert_path: str) -> PkiIdentity:
-    key = load_private_key_from_pem(open(key_path, 'rb').read())
-    cert = load_certificate_from_der(open(cert_path, 'rb').read())
-    return PkiIdentity(key, [cert])
+def _decode_material(value: str, label: str) -> bytes:
+    """注入的证书/私钥：接受 PEM 文本或 base64 编码的 DER。"""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label}: 注入值必须是非空字符串（PEM 文本或 base64 DER）")
+    if "BEGIN" in value:
+        return value.encode('utf-8')
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError(f"{label}: 既不是 PEM 文本也不是合法 base64（{e}）")
 
 
-def load_pki_from_resources(resources_dir: str) -> Dict[str, Any]:
+def _load_private_key_auto(data: bytes):
+    if data.lstrip().startswith(b'-----BEGIN'):
+        return load_private_key_from_pem(data)
+    return load_private_key_from_der(data)
+
+
+def _load_certificate_auto(data: bytes):
+    if data.lstrip().startswith(b'-----BEGIN'):
+        return load_certificate_from_pem(data)
+    return load_certificate_from_der(data)
+
+
+def _material_bytes(input_data: Dict[str, Any], key: str, default_path: str, label: str) -> bytes:
+    """证书/私钥来源：优先输入参数注入，其次包内默认文件。"""
+    override = input_data.get(key)
+    if override:
+        logger.info(f"{label}: 使用输入参数 {key} 注入（覆盖 {os.path.basename(default_path)}）")
+        return _decode_material(override, key)
+    if not os.path.exists(default_path):
+        raise FileNotFoundError(
+            f"{label} 缺失：{default_path}"
+            f"（可用输入参数 {key} 注入 PEM 文本或 base64 DER）")
+    return open(default_path, 'rb').read()
+
+
+def _optional_material_bytes(input_data: Dict[str, Any], key: str,
+                             default_path: str) -> Optional[bytes]:
+    if input_data.get(key):
+        return _decode_material(input_data[key], key)
+    if os.path.exists(default_path):
+        return open(default_path, 'rb').read()
+    return None
+
+
+def load_identity(key_data: bytes, cert_data: bytes) -> PkiIdentity:
+    return PkiIdentity(_load_private_key_auto(key_data), [_load_certificate_auto(cert_data)])
+
+
+def load_pki_from_resources(resources_dir: str,
+                            input_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """加载 DPauth / DPpb / CI，以及（可选的）eIM 证书与私钥。
 
-    目录结构：
+    默认取包内资源目录：
         resources_dir/certs/
             SK_S_SM_DPauth_ECDSA_NIST.pem      CERT_S_SM_DPauth_ECDSA_NIST.der
             SK_S_SM_DPpb_ECDSA_NIST.pem        CERT_S_SM_DPpb_ECDSA_NIST.der
             CERT_CI_ECDSA_NIST.pem
             SK_EIM_ECDSA_NIST.pem              CERT_EIM_ECDSA_NIST.der   (间接模式)
-    """
-    from src.pki_manager import load_certificate_from_pem
 
+    每一项都可用输入参数**外部注入**覆盖（PEM 文本或 base64 DER）：
+        dp_auth_key / dp_auth_cert / dp_pb_key / dp_pb_cert / ci_cert / eim_key / eim_cert
+    """
+    input_data = input_data or {}
     certs_dir = os.path.join(resources_dir, "certs")
-    if not os.path.exists(certs_dir):
-        raise FileNotFoundError(f"Certs directory not found: {certs_dir}")
+
+    def default(name: str) -> str:
+        return os.path.join(certs_dir, name)
+
+    injected = sorted(k for k in (
+        "dp_auth_key", "dp_auth_cert", "dp_pb_key", "dp_pb_cert", "ci_cert", "eim_key", "eim_cert",
+    ) if input_data.get(k))
 
     dp_auth = load_identity(
-        os.path.join(certs_dir, "SK_S_SM_DPauth_ECDSA_NIST.pem"),
-        os.path.join(certs_dir, "CERT_S_SM_DPauth_ECDSA_NIST.der"),
+        _material_bytes(input_data, "dp_auth_key", default("SK_S_SM_DPauth_ECDSA_NIST.pem"), "DPauth 私钥"),
+        _material_bytes(input_data, "dp_auth_cert", default("CERT_S_SM_DPauth_ECDSA_NIST.der"), "DPauth 证书"),
     )
     dp_pb = load_identity(
-        os.path.join(certs_dir, "SK_S_SM_DPpb_ECDSA_NIST.pem"),
-        os.path.join(certs_dir, "CERT_S_SM_DPpb_ECDSA_NIST.der"),
+        _material_bytes(input_data, "dp_pb_key", default("SK_S_SM_DPpb_ECDSA_NIST.pem"), "DP Profile Binding 私钥"),
+        _material_bytes(input_data, "dp_pb_cert", default("CERT_S_SM_DPpb_ECDSA_NIST.der"), "DP Profile Binding 证书"),
     )
-    ci_cert = load_certificate_from_pem(
-        open(os.path.join(certs_dir, "CERT_CI_ECDSA_NIST.pem"), 'rb').read()
+    ci_cert = _load_certificate_auto(
+        _material_bytes(input_data, "ci_cert", default("CERT_CI_ECDSA_NIST.pem"), "CI 根证书")
     )
 
     eim_identity: Optional[PkiIdentity] = None
-    eim_key_path = os.path.join(certs_dir, "SK_EIM_ECDSA_NIST.pem")
-    eim_cert_path = os.path.join(certs_dir, "CERT_EIM_ECDSA_NIST.der")
-    if os.path.exists(eim_key_path) and os.path.exists(eim_cert_path):
-        eim_identity = load_identity(eim_key_path, eim_cert_path)
+    eim_key = _optional_material_bytes(input_data, "eim_key", default("SK_EIM_ECDSA_NIST.pem"))
+    eim_cert = _optional_material_bytes(input_data, "eim_cert", default("CERT_EIM_ECDSA_NIST.der"))
+    if eim_key and eim_cert:
+        eim_identity = load_identity(eim_key, eim_cert)
 
     return {
         "dp_auth_identity": dp_auth,
         "dp_pb_identity": dp_pb,
         "ci_cert": ci_cert,
         "eim_identity": eim_identity,
+        "injected": injected,
     }
 
 
-def load_profile_payload(resources_dir: str, iccid: str) -> bytes:
-    """加载 Profile Payload（UPP）：优先匹配 ICCID，其次默认文件名。"""
+def _decode_payload(value: str) -> bytes:
+    """注入的 UPP：十六进制文本或 base64。"""
+    text = "".join(value.split())
+    if text and len(text) % 2 == 0 and re.fullmatch(r'[0-9a-fA-F]+', text):
+        return bytes.fromhex(text)
+    return base64.b64decode(value)
+
+
+def load_profile_payload(resources_dir: str, iccid: str,
+                         payload_override: Optional[str] = None) -> bytes:
+    """加载 Profile Payload（UPP）：输入注入 > 按 ICCID 匹配 > 默认文件名。"""
     import glob
+
+    if payload_override:
+        logger.info("Profile payload: 使用输入参数 upp_payload 注入")
+        return _decode_payload(payload_override)
 
     profiles_dir = os.path.join(resources_dir, "profiles")
     if not os.path.exists(profiles_dir):
@@ -345,7 +420,7 @@ class ProfileDownloadExecutor:
             lambda status, data=None, error=None: send_finished(self.execution_id, status, data, error))
 
         resources_dir = resources_dir or default_resources_dir()
-        pki = load_pki_from_resources(resources_dir)
+        pki = load_pki_from_resources(resources_dir, input_data)
         icon_payload, detected_icon_type = load_profile_icon(resources_dir)
         icon_type = int(input_data.get("icon_type", detected_icon_type if icon_payload else 0))
         icon = icon_payload if icon_type > 0 else None
@@ -358,10 +433,17 @@ class ProfileDownloadExecutor:
             iccid=input_data["iccid"],
             service_provider_name=input_data.get("spn", ""),
             profile_class=input_data.get("profile_class", 2),
-            payload=load_profile_payload(resources_dir, input_data["iccid"]),
+            payload=load_profile_payload(resources_dir, input_data["iccid"],
+                                         input_data.get("upp_payload")),
             icon=icon,
             icon_type=icon_type,
         ))
+
+        injected = list(pki.get("injected") or [])
+        if input_data.get("upp_payload"):
+            injected.append("upp_payload")
+        if injected:
+            self._output("INFO", f"使用外部注入的材料: {', '.join(sorted(injected))}")
 
         self.smdp_plus = LocalSmdpPlus(
             packages=packages,

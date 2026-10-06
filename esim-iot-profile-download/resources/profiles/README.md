@@ -1,10 +1,9 @@
 # Profile 文件目录
 
-## 已复制的 Profile 文件
-
-从 Java 测试平台复制的 Profile 文件：
+## Profile 文件
 
 - `PROFILE_OPERATIONAL1_8929901012345678905F.HEX` - UPP (User Profile Package)，十六进制文本格式
+- `icon1.png` - Profile 图标（StoreMetadata(BF25) 的 `iconType`/`icon` 字段需要）
 
 ## 文件格式
 
@@ -27,13 +26,6 @@ A040800102810103821447534D412050726F66696C65205061636B616765...
 2. **默认文件**（当没有 ICCID 匹配时）：
    - `PROFILE_OPERATIONAL1.HEX`
    - `PROFILE_OPERATIONAL1.bin`
-
-## 来源
-
-这个 Profile 文件来自 Java 测试平台：
-```
-***REMOVED***/source/iot-test-platform/case-factory/perftest/IOT_PERF_TEST_Install_Enable_Profile/src/main/resources/profiles/PROFILE_OPERATIONAL1_8929901012345678905F.HEX
-```
 
 ## 查看 Profile 内容
 

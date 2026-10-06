@@ -174,14 +174,6 @@ A0000005591010FFFFFFFF8900001000
 [二进制数据]
 ```
 
-### 从 Java 测试平台提取 UPP
-
-```bash
-# 从 Java 测试平台复制 UPP 文件
-cp ***REMOVED***/source/iot-test-platform/case-factory/perftest/IOT_PERF_TEST_Install_Enable_Profile/src/main/resources/profiles/PROFILE_OPERATIONAL1_*.HEX \
-   ***REMOVED***/workspaces/smartcard/smartcard-master-skills/esim-iot-profile-download/resources/profiles/
-```
-
 ---
 
 ## 完整配置示例

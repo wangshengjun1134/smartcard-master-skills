@@ -15,6 +15,8 @@ description: IoT eSIM Profile 下载与启用（内嵌本地 SM-DP+，直接模�
 本包同时是「Agent 技能」与「SmartCard 技能包」：目录里的 `SKILL.md` 供 agent 发现与开关，
 `skill.json` 供 SmartCard Runtime 注册为可执行技能。对话中要真正执行时：
 
+0. **首次使用先装环境**（技能自己维护执行环境）：`smartcard_execute_skill` +
+   `{"operation": "setup_env"}`，返回 `SUCCESS` 后再继续（详见「运行环境」）
 1. **先连读卡器**：调用 `smartcard_connect`（技能不直接操作读卡器，卡片动作统一由 Runtime 执行）
 2. **再执行技能**：调用 `smartcard_execute_skill`，`skillId` 固定为 `esim.iot-profile-download`：
 
@@ -56,37 +58,58 @@ ln -s <repo>/smartcard-master-skills/esim-iot-profile-download <workspace>/.qwen
   `<全局配置目录>/skills` 以及 `QWEN_SMARTCARD_SKILLS_DIR` 指定的目录，发现 `skill.json` 就注册为
   可执行技能；`GET /smartcard/skills` 可见，`PATCH /smartcard/skills/<id>/enabled` 可开关
 
-## 运行环境（技能自带）
+## 运行环境（技能自带，uv 维护）
 
-Runtime 只以 **`python <entry>`**（`ProcessPythonHost`）启动本技能，**不安装依赖、不使用技能包内的
-虚拟环境**（Design v2.4 §9：Runtime 不修改执行环境）。因此依赖环境由**技能自己维护**：
+环境属于**技能自己**，不依赖宿主机已装的第三方库、也不使用 agent 的解释器：
 
-1. **准备环境（推荐，一次性）**
-   ```bash
-   bash scripts/setup-venv.sh        # 在技能包内创建 .venv 并安装 requirements.txt
-   ```
-   Windows（PowerShell）：`python -m venv .venv; .venv\Scripts\python -m pip install -r requirements.txt`
+| 层 | 谁提供 | 说明 |
+| --- | --- | --- |
+| 起进程 | **宿主机** | Runtime `ProcessPythonHost` 固定 `spawn('python', [main.py])`（可用 `QWEN_SMARTCARD_PYTHON` 指向别的解释器）；只需"有 python 能起进程" |
+| 业务依赖 | **技能自己** | `<技能包>/.venv`：`cryptography` + `pyasn1`，由 uv（优先）/ venv+pip 安装 |
+| agent | 不参与 | agent 只通过 IPC 发 `start` / `action_result` |
 
-2. **入口自动切换**：`main.py` 在导入业务模块前做依赖自检；若当前解释器缺少
-   `cryptography`/`pyasn1`，会自动切到技能包自带环境并重新执行本进程
-   （`os.execv`，stdin/stdout 保留，IPC 不受影响）：
-   - 查找顺序：`$ESIM_SKILL_VENV` → `<技能包>/.venv` → `<技能包>/venv`（兼容 POSIX 与 Windows 布局）
-   - 都不可用时输出可操作的自检信息并以退出码 3 结束（Runtime 会报 FAILED 并透出 stderr）
-   - `ESIM_SKILL_AUTO_INSTALL=1` 时允许技能首次运行自动创建 `.venv` 并 `pip install`（默认关闭，
-     以免隐式联网/改环境）
+### 使用顺序：先安装，再执行业务
 
-3. **前置条件**：Runtime 侧需有名为 `python` 的可执行文件（Ubuntu 可 `sudo apt install python-is-python3`
-   或自行加软链）；技能包内的虚拟环境**不要打包分发**（`.gitignore` 已忽略 `venv/`、`.venv/`，
-   各机器按第 1 步生成）
+**① 安装环境**（首次使用；二选一）
 
-4. **证书/Profile 资源目录**：默认取环境变量 `SKILL_PACKAGE_PATH` 下的 `resources/`
-   （可用输入参数 `resources_dir` 覆盖），内含：
-   - `certs/SK_S_SM_DPauth_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPauth_ECDSA_NIST.der`
-   - `certs/SK_S_SM_DPpb_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPpb_ECDSA_NIST.der`
-   - `certs/CERT_CI_ECDSA_NIST.pem`
-   - `certs/SK_EIM_ECDSA_NIST.pem`、`certs/CERT_EIM_ECDSA_NIST.der`（间接模式必需）
-   - `profiles/PROFILE_OPERATIONAL1_<ICCID>.HEX`（UPP）
-   - `profiles/icon1.png`（Profile 图标；StoreMetadata(BF25) 的 93/94 字段需要，本测试卡会校验）
+```jsonc
+// 方式 A：通过技能自身 IPC（agent 可直接调用，无需 shell）
+{"operation": "setup_env"}
+// 可选参数：{"operation": "setup_env", "force": true, "python": "3.12"}
+```
+
+```bash
+# 方式 B：命令行
+bash scripts/setup-env.sh         # uv 优先；无 uv 时回退 python venv + pip
+```
+
+返回 `SUCCESS` 且 `data.status` 为 `installed`（或 `already_satisfied`），`data` 含
+`env_path` / `python` / `python_version` / `dependencies` / `method`。
+
+**② 执行业务**（`smartcard_connect` + `smartcard_execute_skill`，见上节）
+若未安装就执行业务，会返回 `FAILED ENV_NOT_READY` 并提示先执行 `setup_env`。
+
+### 环境细节
+
+- 推荐安装 uv：`curl -LsSf https://astral.sh/uv/install.sh | sh`；`uv venv` 可**自行下载**所需 CPython，
+  不依赖宿主机 Python 版本；未装 uv 时自动回退 `python -m venv` + pip
+- 入口自动切换：`main.py` 启动时若当前解释器缺依赖，会自动 `os.execv` 到技能自带环境
+  （stdin/stdout 保留，IPC 不受影响）；查找顺序 `$ESIM_SKILL_VENV` → `<技能包>/.venv` → `<技能包>/venv`
+- `ESIM_SKILL_AUTO_INSTALL=1` 时允许入口在首次运行时**自动**建环境（默认关闭，避免隐式联网）
+- Runtime 侧需有名为 `python` 的可执行文件（Ubuntu 可 `sudo apt install python-is-python3` 或加软链）
+- 环境目录**不入库不打包**（`.gitignore` 已忽略 `venv/`、`.venv/`），各机器按步骤 ① 生成
+
+### 证书/Profile 资源目录
+
+默认取 `SKILL_PACKAGE_PATH` 下的 `resources/`（可用输入参数 `resources_dir` 覆盖）：
+- `certs/SK_S_SM_DPauth_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPauth_ECDSA_NIST.der`
+- `certs/SK_S_SM_DPpb_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPpb_ECDSA_NIST.der`
+- `certs/CERT_CI_ECDSA_NIST.pem`
+- `certs/SK_EIM_ECDSA_NIST.pem`、`certs/CERT_EIM_ECDSA_NIST.der`（间接模式必需）
+- `profiles/PROFILE_OPERATIONAL1_<ICCID>.HEX`（UPP）
+- `profiles/icon1.png`（Profile 图标；StoreMetadata(BF25) 的 93/94 字段需要，本测试卡会校验）
+
+以上各项均可用输入参数外部注入覆盖（见「资源来源优先级」）。
 
 ## IPC 契约
 
@@ -216,7 +239,7 @@ esim-iot-profile-download/
 ├── skill.json                # Runtime 元数据（skillId=esim.iot-profile-download）
 ├── main.py                   # 入口：IPC 协议 + 执行器（Action 批次 / 传输层跟进）
 ├── requirements.txt          # 运行依赖
-├── scripts/setup-venv.sh     # 生成技能自带虚拟环境（.venv）
+├── scripts/setup-env.sh      # 生成技能自带环境（uv 优先）
 ├── resources/                # 证书与 Profile 资源
 ├── src/                      # 协议逻辑（ASN.1 / SCP03t / SM-DP+ / eIM / 流程）
 └── tests/                    # 离线测试 + 真卡连线测试

@@ -11,11 +11,16 @@
   * execution_finished.error 为字符串；日志一律写 stderr（stdout 只输出 JSON）
   * Skill 不直接操作读卡器：所有卡片操作都以 Action（APDU / RESET_CARD / WAIT）交给 Runtime
 
-运行环境：Runtime（`ProcessPythonHost`）只以 `python <entry>` 启动本文件，不安装依赖、
-也不使用技能包内的虚拟环境（Design v2.4 §9：Runtime 不改执行环境）。因此**技能自行维护
-自己的 Python 环境**：入口在导入业务模块前做依赖自检，必要时切到技能包自带的虚拟环境
-（`<package>/.venv`，见 `scripts/setup-venv.sh`）重新执行本进程。
+运行环境（技能自维护，uv 优先）：Runtime（`ProcessPythonHost`）只以 `python <entry>` 启动本文件，
+不安装依赖、也不使用技能包内的虚拟环境（Design v2.4 §9：Runtime 不改执行环境）。所以：
+
+  * 环境属于**技能自己**：`<技能包>/.venv`，由 uv（优先）或 venv+pip 创建，见 `scripts/setup-env.sh`
+  * **先安装，再执行业务**：首次使用先以 `{"operation": "setup_env"}` 调用本技能（或跑 setup-env.sh），
+    装好后入口会自动切换解释器（`os.execv`，stdin/stdout 保留，IPC 不受影响）
+  * 未安装就执行业务 → 返回 `FAILED ENV_NOT_READY` 并提示先安装
 """
+
+from __future__ import annotations
 
 import base64
 import binascii
@@ -23,6 +28,7 @@ import json
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import logging
@@ -75,86 +81,144 @@ def interpreter_has_dependencies(python_exe: str, timeout: int = 30) -> bool:
         return False
 
 
-def create_package_venv(package_dir: str) -> Optional[str]:
-    """在技能包内创建虚拟环境并安装运行依赖（仅当显式允许时调用）。
+def uv_executable() -> Optional[str]:
+    """返回 uv 可执行文件路径；未安装则 None。"""
+    return shutil.which("uv")
 
-    返回可用解释器路径；失败返回 None。
+
+def env_python(venv_dir: str) -> Optional[str]:
+    """虚拟环境里的解释器路径（兼容 POSIX 与 Windows 布局）。"""
+    for relative in (os.path.join("bin", "python"), os.path.join("Scripts", "python.exe")):
+        candidate = os.path.join(venv_dir, relative)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def create_package_env(package_dir: str, python_spec: Optional[str] = None) -> Dict[str, Any]:
+    """创建/刷新技能自带环境 `<package>/.venv` 并安装 requirements。
+
+    **uv 优先**（`uv venv` 可自行下载所需 CPython，不依赖宿主机 Python 版本），
+    未安装 uv 时回退 `python -m venv` + pip。
+
+    返回 {"ok": bool, "method": "uv"|"venv", "python": str|None, "log": [命令行...]}
     """
     venv_dir = os.path.join(package_dir, ".venv")
     requirements = os.path.join(package_dir, "requirements.txt")
+    log: List[str] = []
+    uv = uv_executable()
+
+    def run(command: List[str]) -> None:
+        log.append("$ " + " ".join(str(part) for part in command))
+        subprocess.run(command, check=True, stdin=subprocess.DEVNULL)
+
     try:
-        print(f"[bootstrap] 创建技能自带虚拟环境：{venv_dir}", file=sys.stderr)
-        subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
-        candidates = [path for path in venv_python_candidates(package_dir)
-                      if path.startswith(venv_dir) and os.path.exists(path)]
-        if not candidates:
-            print("[bootstrap] 虚拟环境创建后未找到解释器", file=sys.stderr)
-            return None
-        python_exe = candidates[0]
-        subprocess.run([python_exe, "-m", "pip", "install", "--upgrade", "pip"], check=True)
-        subprocess.run([python_exe, "-m", "pip", "install", "-r", requirements], check=True)
-        return python_exe
+        if uv:
+            try:
+                run([uv, "venv", venv_dir] + (["--python", python_spec] if python_spec else []))
+            except subprocess.CalledProcessError:
+                log.append(f"指定解释器 {python_spec} 不可用，改用 uv 自动选择")
+                run([uv, "venv", venv_dir])
+            python_exe = env_python(venv_dir)
+            if not python_exe:
+                return {"ok": False, "method": "uv", "python": None,
+                        "log": log + ["[error] 环境创建后未找到解释器"]}
+            run([uv, "pip", "install", "--python", python_exe, "-r", requirements])
+            return {"ok": True, "method": "uv", "python": python_exe, "log": log}
+
+        python = shutil.which("python") or shutil.which("python3") or sys.executable
+        run([python, "-m", "venv", venv_dir])
+        python_exe = env_python(venv_dir)
+        if not python_exe:
+            return {"ok": False, "method": "venv", "python": None,
+                    "log": log + ["[error] 环境创建后未找到解释器"]}
+        run([python_exe, "-m", "pip", "install", "--upgrade", "pip"])
+        run([python_exe, "-m", "pip", "install", "-r", requirements])
+        return {"ok": True, "method": "venv", "python": python_exe, "log": log}
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"[bootstrap] 自动安装依赖失败：{e}", file=sys.stderr)
+        return {"ok": False, "method": "uv" if uv else "venv", "python": None,
+                "log": log + [f"[error] {e}"]}
+
+
+def dependency_versions(python_exe: str) -> Dict[str, str]:
+    """读取指定解释器中运行依赖的版本（失败返回空 dict）。"""
+    code = ("import importlib.metadata as m, json;"
+            "print(json.dumps({n: m.version(n) for n in ('cryptography','pyasn1')}))")
+    try:
+        completed = subprocess.run([python_exe, "-c", code], check=True, text=True,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, timeout=30)
+        return json.loads(completed.stdout.strip() or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
+def interpreter_python_version(python_exe: str) -> Optional[str]:
+    try:
+        completed = subprocess.run(
+            [python_exe, "-c", "import platform;print(platform.python_version())"],
+            check=True, text=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=30)
+        return completed.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
         return None
 
 
-def ensure_runtime_environment() -> None:
-    """确保技能使用具备依赖的解释器运行。
+def bootstrap_runtime_environment() -> str:
+    """启动期环境引导（只用标准库，缺依赖时也能启动并通过 IPC 回话）。
 
-    1. 当前解释器已具备依赖 → 直接继续
-    2. 技能包自带虚拟环境具备依赖 → `os.execv` 切换（保留 stdin/stdout，IPC 不受影响）
-    3. 显式允许（`ESIM_SKILL_AUTO_INSTALL=1`）→ 创建 `<package>/.venv` 并安装依赖后切换
-    4. 否则输出可操作的自检信息并以退出码 3 结束（Runtime 会报 FAILED 并透出 stderr）
+    1. 当前解释器已具备依赖 → "ready"
+    2. 技能自带环境（`$ESIM_SKILL_VENV` → `<package>/.venv` → `<package>/venv`）具备依赖
+       → `os.execv` 切换过去（保留 stdin/stdout，IPC 不受影响）
+    3. `ESIM_SKILL_AUTO_INSTALL=1` → 用 uv/venv 建环境后切换
+    4. 都不行 → "missing"：由 main() 回复 `ENV_NOT_READY`，请调用方先执行安装
     """
-    if os.environ.get(_VENV_ACTIVE_ENV) == "1":
-        return
-    if current_interpreter_has_dependencies():
-        return
+    if os.environ.get(_VENV_ACTIVE_ENV) == "1" or current_interpreter_has_dependencies():
+        return "ready"
 
     package_dir = os.environ.get("SKILL_PACKAGE_PATH") or PACKAGE_DIR
     for candidate in venv_python_candidates(package_dir):
         if interpreter_has_dependencies(candidate):
             os.environ[_VENV_ACTIVE_ENV] = "1"
             os.execv(candidate, [candidate, os.path.abspath(__file__), *sys.argv[1:]])
-            return
+            return "ready"          # execv 成功后不会执行到这里
 
     if os.environ.get(_AUTO_INSTALL_ENV) == "1":
-        python_exe = create_package_venv(package_dir)
-        if python_exe and interpreter_has_dependencies(python_exe):
+        created = create_package_env(package_dir)
+        python_exe = created.get("python")
+        if created["ok"] and python_exe and interpreter_has_dependencies(python_exe):
             os.environ[_VENV_ACTIVE_ENV] = "1"
             os.execv(python_exe, [python_exe, os.path.abspath(__file__), *sys.argv[1:]])
-            return
+            return "ready"
 
-    missing = ", ".join(m for m in REQUIRED_MODULES if importlib.util.find_spec(m) is None)
-    print(
-        f"[bootstrap] 当前解释器 {sys.executable} 缺少运行依赖：{missing or 'unknown'}\n"
-        f"[bootstrap] 请为技能准备自带环境（推荐）：\n"
-        f"           bash {os.path.join(package_dir, 'scripts', 'setup-venv.sh')}\n"
-        f"           或设置 {_AUTO_INSTALL_ENV}=1 让技能首次运行时自动创建 {os.path.join(package_dir, '.venv')}\n"
-        f"[bootstrap] 若已有虚拟环境在其他位置，可设置 {_VENV_DIR_ENV}=<venv 目录>",
-        file=sys.stderr,
-    )
-    sys.exit(3)
+    return "missing"
 
 
-ensure_runtime_environment()
+ENV_STATUS = bootstrap_runtime_environment()
 
 sys.path.insert(0, PACKAGE_DIR)
 
-from src.apdu_builder import ApduCommand
-from src.profile_download import ProfileDownloadFlow, ProfileDownloadError
-from src.smdp_plus import LocalSmdpPlus
-from src.pki_manager import (
-    PkiIdentity,
-    load_private_key_from_pem,
-    load_private_key_from_der,
-    load_certificate_from_pem,
-    load_certificate_from_der,
-)
-from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
-from src.skill_actions import to_ipc
-from src.utils import validate_eid, validate_iccid, validate_matching_id
+# 业务模块依赖第三方库：缺依赖时不阻断启动（仍能通过 IPC 回复「请先安装」/ 执行 setup_env）
+try:
+    from src.apdu_builder import ApduCommand
+    from src.profile_download import ProfileDownloadFlow, ProfileDownloadError
+    from src.smdp_plus import LocalSmdpPlus
+    from src.pki_manager import (
+        PkiIdentity,
+        load_private_key_from_pem,
+        load_private_key_from_der,
+        load_certificate_from_pem,
+        load_certificate_from_der,
+    )
+    from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
+    from src.skill_actions import to_ipc
+    from src.utils import validate_eid, validate_iccid, validate_matching_id
+
+    DEPENDENCIES_READY = True
+    IMPORT_ERROR: Optional[str] = None
+except ImportError as exc:      # noqa: BLE001 - 记录原因，交由 main() 通过 IPC 上报
+    DEPENDENCIES_READY = False
+    IMPORT_ERROR = str(exc)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -203,18 +267,53 @@ def send_finished(execution_id: str, status: str, data: Optional[Dict] = None,
     send_message(msg)
 
 
-def check_runtime_dependencies() -> Optional[str]:
-    """运行前检查依赖（Runtime 不会自动安装依赖，见 Design v2.4 §9）。"""
-    missing = []
-    for module in REQUIRED_MODULES:
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(module)
-    if missing:
-        return (f"缺少 Python 依赖: {', '.join(missing)}；"
-                f"请用 Runtime 使用的解释器安装：pip install -r requirements.txt")
-    return None
+def run_setup_env(execution_id: str, input_data: Dict[str, Any]) -> None:
+    """operation="setup_env"：建立/刷新技能自带执行环境（供 agent 首次调用）。
+
+    环境由技能自己维护（uv 优先，uv 可自行下载所需 CPython），不依赖宿主机 Python 版本；
+    装好后 main.py 入口会自动切换到该环境（见 bootstrap_runtime_environment）。
+    """
+    package_dir = os.environ.get("SKILL_PACKAGE_PATH") or PACKAGE_DIR
+    venv_dir = os.path.join(package_dir, ".venv")
+    force = bool(input_data.get("force"))
+
+    send_output(execution_id, "INFO", f"技能自带环境目录: {venv_dir}")
+
+    if not force and current_interpreter_has_dependencies():
+        data = {
+            "status": "already_satisfied",
+            "python": sys.executable,
+            "python_version": interpreter_python_version(sys.executable),
+            "dependencies": dependency_versions(sys.executable),
+        }
+        send_output(execution_id, "INFO", "当前解释器已具备运行依赖，无需安装（force=true 可强制重建）")
+        send_finished(execution_id, "SUCCESS", data=data)
+        return
+
+    uv = uv_executable()
+    send_output(execution_id, "INFO",
+                f"安装方式: {('uv ' + uv) if uv else 'python -m venv + pip（未检测到 uv）'}")
+    result = create_package_env(package_dir, python_spec=input_data.get("python") or None)
+    for line in result["log"]:
+        send_output(execution_id, "INFO", line)
+
+    python_exe = result.get("python")
+    if not result["ok"] or not python_exe or not interpreter_has_dependencies(python_exe):
+        hint = ("未检测到 uv，建议安装后重试： curl -LsSf https://astral.sh/uv/install.sh | sh"
+                if not uv else "请检查网络/权限后重试")
+        send_finished(execution_id, "FAILED", error=f"ENV_SETUP_FAILED: 环境安装失败；{hint}")
+        return
+
+    data = {
+        "status": "installed",
+        "method": result["method"],
+        "env_path": os.path.dirname(os.path.dirname(python_exe)),
+        "python": python_exe,
+        "python_version": interpreter_python_version(python_exe),
+        "dependencies": dependency_versions(python_exe),
+    }
+    send_output(execution_id, "INFO", f"环境就绪：{python_exe}（{data['python_version']}）")
+    send_finished(execution_id, "SUCCESS", data=data)
 
 
 def validate_input(input_data: Dict[str, Any]) -> Optional[str]:
@@ -629,7 +728,21 @@ def main():
             execution_id = msg["executionId"]
             input_data = msg.get("input", {}) or {}
 
-            error = check_runtime_dependencies() or validate_input(input_data)
+            # ① 环境准备（只用标准库，缺依赖时也能响应）
+            if input_data.get("operation") == "setup_env":
+                run_setup_env(execution_id, input_data)
+                continue
+
+            # ② 业务操作前必须已具备运行依赖，否则明确告知「先安装」
+            if not DEPENDENCIES_READY:
+                send_finished(execution_id, "FAILED", error=(
+                    "ENV_NOT_READY: 技能自带执行环境未就绪 "
+                    f"({IMPORT_ERROR})。请先执行安装：以 "
+                    '{"operation": "setup_env"} 调用本技能，或运行 bash scripts/setup-env.sh'
+                    "（详见 SKILL.md「运行环境」）"))
+                continue
+
+            error = validate_input(input_data)
             if error:
                 send_finished(execution_id, "FAILED", error=f"INVALID_INPUT: {error}")
                 continue

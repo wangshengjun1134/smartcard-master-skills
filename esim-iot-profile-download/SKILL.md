@@ -10,6 +10,52 @@ description: IoT eSIM Profile 下载与启用（内嵌本地 SM-DP+，直接模�
 `IOT_PERF_TEST_Install_Enable_Profile`（`ScriptTaskProcesser`），对应 SGP.33
 4.2.21.2.1 `TC_eUICC_ES10b_EnableProfile_Case3`。
 
+## 在对话中调用（Agent 使用方式）
+
+本包同时是「Agent 技能」与「SmartCard 技能包」：目录里的 `SKILL.md` 供 agent 发现与开关，
+`skill.json` 供 SmartCard Runtime 注册为可执行技能。对话中要真正执行时：
+
+1. **先连读卡器**：调用 `smartcard_connect`（技能不直接操作读卡器，卡片动作统一由 Runtime 执行）
+2. **再执行技能**：调用 `smartcard_execute_skill`，`skillId` 固定为 `esim.iot-profile-download`：
+
+   ```json
+   {
+     "skillId": "esim.iot-profile-download",
+     "input": {
+       "operation": "install_and_enable",
+       "mode": "indirect",
+       "eid": "89049032123451234512345678901235",
+       "smdp_address": "testsmdpplus1.example.com",
+       "matching_id": "04386-AGYFT-A74Y8-3F815",
+       "iccid": "8929901012345678905",
+       "profile_id": "A0000005591010FFFFFFFF8900001000",
+       "eim_id": "testeim1",
+       "profile_name": "Operational Profile Name 1",
+       "spn": "SP Name 1"
+     }
+   }
+   ```
+
+3. **读结果**：工具返回 `Status` + 事件列表（`[INFO]/[WARN]/[ERROR]` 逐步进度）；
+   结构化结果在 `execution_finished.data`（`iccid` / `isdp_aid` / `profile_state` / `verified` / `warnings`）
+4. **判读**：以 `profile_state`（来自 `GetProfilesInfo` 的 `9F70`）为准，只有 `verified: true` 才算启用成功；
+   技能被禁用时调用返回 `FAILED ... is disabled`
+
+### 注册与开关
+
+把技能包目录（或软链）放到 agent 的技能目录即可同时完成两侧注册：
+
+```bash
+# 项目级（推荐，当前工作区）
+ln -s <repo>/smartcard-master-skills/esim-iot-profile-download <workspace>/.qwen/skills/
+# 或全局：<全局配置目录>/skills/esim-iot-profile-download
+```
+
+- **Agent 侧**：出现在技能列表（`GET /workspace/runtime/skills`，level=project/global），可禁用/启用
+- **Runtime 侧**：daemon 启动时扫描 `<workspace>/.qwen/skills`、`<workspace>/.agents/skills`、
+  `<全局配置目录>/skills` 以及 `QWEN_SMARTCARD_SKILLS_DIR` 指定的目录，发现 `skill.json` 就注册为
+  可执行技能；`GET /smartcard/skills` 可见，`PATCH /smartcard/skills/<id>/enabled` 可开关
+
 ## 运行环境（技能自带）
 
 Runtime 只以 **`python <entry>`**（`ProcessPythonHost`）启动本技能，**不安装依赖、不使用技能包内的

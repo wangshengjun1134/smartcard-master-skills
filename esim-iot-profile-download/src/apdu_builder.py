@@ -108,8 +108,15 @@ def status(channel: int) -> ApduCommand:
 
 
 def manage_channel_open() -> ApduCommand:
-    """MANAGE_CHANNEL OPEN"""
-    return ApduCommand(cla=0x00, ins=0x70, p1=0x00, p2=0x00, data=bytes([0x01]))
+    """MANAGE_CHANNEL OPEN
+
+    T=0 下必须发成 `00 70 00 00 01`（**Le=1，不带数据**），卡片才会返回新通道号；
+    若改成 Lc=1 + data=01 的 6 字节形式，PC/SC 驱动直接报
+    `0x80100016 (SCARD_E_NOT_TRANSACTED)`，与 Java 参考脚本 `0070000001` 一致。
+    """
+    return ApduCommand(cla=0x00, ins=0x70, p1=0x00, p2=0x00, le=0x01,
+                       name="MANAGE CHANNEL (open)",
+                       description="打开下一个可用逻辑通道（Le=1，无数据）")
 
 
 def select_isdr(channel: int) -> ApduCommand:

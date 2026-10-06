@@ -451,7 +451,8 @@ class ProfileDownloadExecutor:
         # T=0 大响应：61XX 需 GET RESPONSE（Runtime 只做单条 APDU 透传，不自动跟进）
         if sw1 == 0x61 and self.follow_ups < MAX_TRANSPORT_FOLLOW_UPS:
             self.follow_ups += 1
-            le = sw2 or 256
+            # Le 是一个字节：0 表示 256（61 00 = 还剩 256 字节）
+            le = sw2
             self._action(ApduCommand(cla=self.last_cla or 0x00, ins=0xC0, p1=0x00, p2=0x00, le=le,
                                      action_id=f"{action_id}.get-response",
                                      name="GET RESPONSE",
@@ -461,7 +462,7 @@ class ProfileDownloadExecutor:
         # eUICC 异步响应：91XX 需 FETCH
         if sw1 == 0x91 and self.follow_ups < MAX_TRANSPORT_FOLLOW_UPS:
             self.follow_ups += 1
-            le = sw2 or 256
+            le = sw2
             self._action(ApduCommand(cla=0x80 | ((self.last_cla or 0x00) & 0x0F), ins=0x12,
                                      p1=0x00, p2=0x00, le=le,
                                      action_id=f"{action_id}.fetch",

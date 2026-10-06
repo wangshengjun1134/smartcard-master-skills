@@ -285,7 +285,7 @@ class LocalSmdpPlus:
         获取 BPP 分段列表
         
         Returns:
-            [(is_last, data), ...]
+            [(block_number, p1, data), ...]（按 ASN.1 对象切分，块号每对象从 0 起）
         """
         session = self._require_session(transaction_id)
         if session.bpp_data is None:

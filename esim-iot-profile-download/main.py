@@ -1,32 +1,49 @@
 #!/usr/bin/env python3
-"""
-eSIM IoT Profile Download Skill - 主入口
+"""eSIM IoT Profile Download Skill - 入口（Python Skill）
 
-通过 JSON Lines IPC 与 SmartCard Skill Runtime 通信。
+与 SmartCard Skill Runtime 通过 JSON Lines IPC 通信：
+
+  Runtime → Skill: start / action_result / stop
+  Skill → Runtime: skill_action / output / execution_finished
+
+协议字段严格对齐 `packages/core/src/smartcard/runtime/ipc-protocol.ts`：
+  * action_result.response = { sw: number, data: number[] }；RESET_CARD 结果带 atr
+  * execution_finished.error 为字符串；日志一律写 stderr（stdout 只输出 JSON）
+  * Skill 不直接操作读卡器：所有卡片操作都以 Action（APDU / RESET_CARD / WAIT）交给 Runtime
 """
 
 import json
-import sys
 import os
+import sys
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
-# 添加 src 到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from src.apdu_builder import ApduCommand
 from src.profile_download import ProfileDownloadFlow, ProfileDownloadError
-from src.smdp_plus import LocalSmdpPlus, SmdpPlusError
+from src.smdp_plus import LocalSmdpPlus
 from src.pki_manager import PkiIdentity, load_private_key_from_pem, load_certificate_from_der
 from src.profile_package_store import ProfilePackageStore, ProfilePackageTemplate
+from src.skill_actions import to_ipc
 from src.utils import validate_eid, validate_iccid, validate_matching_id
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    stream=sys.stderr
+    stream=sys.stderr,
 )
 logger = logging.getLogger(__name__)
 
+REQUIRED_MODULES = ("cryptography", "pyasn1")
+
+# 单条 APDU 的 61XX/91XX 自动跟进次数上限（防死循环）
+MAX_TRANSPORT_FOLLOW_UPS = 16
+# 连续「无动作步骤」上限（verify/round-check 等空批次）
+MAX_EMPTY_STEPS = 64
+
+
+# ------------------------------------------------------------------ IPC
 
 def send_message(msg: Dict[str, Any]):
     sys.stdout.write(json.dumps(msg) + "\n")
@@ -45,17 +62,33 @@ def send_output(execution_id: str, level: str, message: str, data: Optional[Dict
     send_message(msg)
 
 
-def send_action(execution_id: str, action: Dict[str, Any]):
-    send_message({"type": "skill_action", "executionId": execution_id, "action": action})
+def send_action(execution_id: str, action) -> None:
+    send_message({"type": "skill_action", "executionId": execution_id, "action": to_ipc(action)})
 
 
-def send_finished(execution_id: str, status: str, data: Optional[Dict] = None, error: Optional[Dict] = None):
-    msg = {"type": "execution_finished", "executionId": execution_id, "status": status}
+def send_finished(execution_id: str, status: str, data: Optional[Dict] = None,
+                  error: Optional[str] = None):
+    """status ∈ SUCCESS | FAILED | CANCELLED；error 按协议为字符串。"""
+    msg: Dict[str, Any] = {"type": "execution_finished", "executionId": execution_id, "status": status}
     if data:
         msg["data"] = data
     if error:
         msg["error"] = error
     send_message(msg)
+
+
+def check_runtime_dependencies() -> Optional[str]:
+    """运行前检查依赖（Runtime 不会自动安装依赖，见 Design v2.4 §9）。"""
+    missing = []
+    for module in REQUIRED_MODULES:
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(module)
+    if missing:
+        return (f"缺少 Python 依赖: {', '.join(missing)}；"
+                f"请用 Runtime 使用的解释器安装：pip install -r requirements.txt")
+    return None
 
 
 def validate_input(input_data: Dict[str, Any]) -> Optional[str]:
@@ -76,213 +109,149 @@ def validate_input(input_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def build_apdu_action(apdu) -> Dict[str, Any]:
-    action = {
-        "id": f"apdu_{apdu.cla:02X}_{apdu.ins:02X}",
-        "type": "APDU",
-        "name": f"APDU CLA={apdu.cla:02X} INS={apdu.ins:02X}",
-        "apdu": {"cla": apdu.cla, "ins": apdu.ins, "p1": apdu.p1, "p2": apdu.p2},
-    }
-    if apdu.data:
-        action["apdu"]["data"] = list(apdu.data)
-    if apdu.le is not None:
-        action["apdu"]["le"] = apdu.le
-    return action
+# ------------------------------------------------------- 资源加载
+
+def default_resources_dir() -> str:
+    """默认资源目录：Runtime 通过 SKILL_PACKAGE_PATH 告知技能包路径。"""
+    package_path = os.environ.get("SKILL_PACKAGE_PATH") or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(package_path, "resources")
 
 
-def load_pki_from_resources(resources_dir: str) -> tuple:
+def load_identity(key_path: str, cert_path: str) -> PkiIdentity:
+    key = load_private_key_from_pem(open(key_path, 'rb').read())
+    cert = load_certificate_from_der(open(cert_path, 'rb').read())
+    return PkiIdentity(key, [cert])
+
+
+def load_pki_from_resources(resources_dir: str) -> Dict[str, Any]:
+    """加载 DPauth / DPpb / CI，以及（可选的）eIM 证书与私钥。
+
+    目录结构：
+        resources_dir/certs/
+            SK_S_SM_DPauth_ECDSA_NIST.pem      CERT_S_SM_DPauth_ECDSA_NIST.der
+            SK_S_SM_DPpb_ECDSA_NIST.pem        CERT_S_SM_DPpb_ECDSA_NIST.der
+            CERT_CI_ECDSA_NIST.pem
+            SK_EIM_ECDSA_NIST.pem              CERT_EIM_ECDSA_NIST.der   (间接模式)
     """
-    从 resources 目录加载 PKI 证书和密钥
-    
-    目录结构:
-        resources_dir/
-        ├── certs/
-        │   ├── SK_S_SM_DP_TLS_NIST.pem      (DPauth 私钥)
-        │   ├── CERT_S_SM_DP_TLS_NIST.der    (DPauth 证书)
-        │   ├── SK_S_SM_DPpb_ECDSA_NIST.pem  (DP Profile Binding 私钥)
-        │   ├── CERT_S_SM_DPpb_ECDSA_NIST.der (DP Profile Binding 证书)
-        │   └── CERT_CI_ECDSA_NIST.pem       (CI 根证书)
-        └── profiles/
-            └── PROFILE_OPERATIONAL1.HEX     (UPP Profile 文件)
-    """
-    import glob
-    
+    from src.pki_manager import load_certificate_from_pem
+
     certs_dir = os.path.join(resources_dir, "certs")
     if not os.path.exists(certs_dir):
         raise FileNotFoundError(f"Certs directory not found: {certs_dir}")
-    
-    # 加载 DPauth 私钥和证书
-    dp_auth_key_files = sorted(glob.glob(os.path.join(certs_dir, "SK_S_SM_DP*.pem")))
-    dp_auth_cert_files = sorted(glob.glob(os.path.join(certs_dir, "CERT_S_SM_DP*.der")))
-    
-    if not dp_auth_key_files or not dp_auth_cert_files:
-        raise FileNotFoundError(
-            f"DPauth certificates not found in {certs_dir}\n"
-            f"Expected: SK_S_SM_DP*.pem and CERT_S_SM_DP*.der"
-        )
-    
-    dp_auth_key = load_private_key_from_pem(open(dp_auth_key_files[0], 'rb').read())
-    dp_auth_cert = load_certificate_from_der(open(dp_auth_cert_files[0], 'rb').read())
-    
-    # 加载 DP Profile Binding 私钥和证书
-    dp_pb_key_files = sorted(glob.glob(os.path.join(certs_dir, "SK_S_SM_DPpb*.pem")))
-    dp_pb_cert_files = sorted(glob.glob(os.path.join(certs_dir, "CERT_S_SM_DPpb*.der")))
-    
-    if not dp_pb_key_files or not dp_pb_cert_files:
-        raise FileNotFoundError(
-            f"DP Profile Binding certificates not found in {certs_dir}\n"
-            f"Expected: SK_S_SM_DPpb*.pem and CERT_S_SM_DPpb*.der"
-        )
-    
-    dp_pb_key = load_private_key_from_pem(open(dp_pb_key_files[0], 'rb').read())
-    dp_pb_cert = load_certificate_from_der(open(dp_pb_cert_files[0], 'rb').read())
-    
-    # 加载 CI 根证书
-    ci_cert_files = sorted(glob.glob(os.path.join(certs_dir, "CERT_CI*.pem")))
-    if not ci_cert_files:
-        raise FileNotFoundError(
-            f"CI root certificate not found in {certs_dir}\n"
-            f"Expected: CERT_CI*.pem"
-        )
-    
-    ci_cert = load_certificate_from_pem(open(ci_cert_files[0], 'rb').read())
-    
-    return (
-        PkiIdentity(dp_auth_key, [dp_auth_cert]),
-        PkiIdentity(dp_pb_key, [dp_pb_cert]),
-        ci_cert,
+
+    dp_auth = load_identity(
+        os.path.join(certs_dir, "SK_S_SM_DPauth_ECDSA_NIST.pem"),
+        os.path.join(certs_dir, "CERT_S_SM_DPauth_ECDSA_NIST.der"),
     )
+    dp_pb = load_identity(
+        os.path.join(certs_dir, "SK_S_SM_DPpb_ECDSA_NIST.pem"),
+        os.path.join(certs_dir, "CERT_S_SM_DPpb_ECDSA_NIST.der"),
+    )
+    ci_cert = load_certificate_from_pem(
+        open(os.path.join(certs_dir, "CERT_CI_ECDSA_NIST.pem"), 'rb').read()
+    )
+
+    eim_identity: Optional[PkiIdentity] = None
+    eim_key_path = os.path.join(certs_dir, "SK_EIM_ECDSA_NIST.pem")
+    eim_cert_path = os.path.join(certs_dir, "CERT_EIM_ECDSA_NIST.der")
+    if os.path.exists(eim_key_path) and os.path.exists(eim_cert_path):
+        eim_identity = load_identity(eim_key_path, eim_cert_path)
+
+    return {
+        "dp_auth_identity": dp_auth,
+        "dp_pb_identity": dp_pb,
+        "ci_cert": ci_cert,
+        "eim_identity": eim_identity,
+    }
 
 
 def load_profile_payload(resources_dir: str, iccid: str) -> bytes:
-    """
-    从 resources 目录加载 Profile Payload (UPP)
-    
-    支持格式:
-        - profiles/PROFILE_OPERATIONAL1_<ICCID>.HEX  (十六进制文本文件)
-        - profiles/PROFILE_OPERATIONAL1_<ICCID>.bin  (二进制文件)
-        - profiles/PROFILE_OPERATIONAL1.HEX          (默认文件)
-    """
+    """加载 Profile Payload（UPP）：优先匹配 ICCID，其次默认文件名。"""
     import glob
-    
+
     profiles_dir = os.path.join(resources_dir, "profiles")
     if not os.path.exists(profiles_dir):
-        # 如果没有 profiles 目录，返回空 payload
         logger.warning(f"Profiles directory not found: {profiles_dir}, using empty payload")
         return b''
-    
-    # 尝试按 ICCID 匹配
-    iccid_pattern = os.path.join(profiles_dir, f"*{iccid}*")
-    iccid_files = glob.glob(iccid_pattern)
-    
-    if iccid_files:
-        # 优先使用匹配 ICCID 的文件
-        upp_file = iccid_files[0]
-    else:
-        # 使用默认文件
-        default_hex = os.path.join(profiles_dir, "PROFILE_OPERATIONAL1.HEX")
-        default_bin = os.path.join(profiles_dir, "PROFILE_OPERATIONAL1.bin")
-        
-        if os.path.exists(default_hex):
-            upp_file = default_hex
-        elif os.path.exists(default_bin):
-            upp_file = default_bin
-        else:
-            logger.warning(f"No profile payload found in {profiles_dir}, using empty payload")
-            return b''
-    
-    # 加载文件
-    if upp_file.endswith('.HEX') or upp_file.endswith('.hex'):
-        # 十六进制文本文件
-        hex_content = open(upp_file, 'r').read().strip()
-        return bytes.fromhex(hex_content.replace(" ", "").replace("\n", "").replace("\r", ""))
-    elif upp_file.endswith('.bin'):
-        # 二进制文件
+
+    candidates = glob.glob(os.path.join(profiles_dir, f"*{iccid}*"))
+    if not candidates:
+        for name in ("PROFILE_OPERATIONAL1.HEX", "PROFILE_OPERATIONAL1.bin"):
+            path = os.path.join(profiles_dir, name)
+            if os.path.exists(path):
+                candidates = [path]
+                break
+    if not candidates:
+        logger.warning(f"No profile payload found in {profiles_dir}, using empty payload")
+        return b''
+
+    upp_file = candidates[0]
+    if upp_file.lower().endswith(".bin"):
         return open(upp_file, 'rb').read()
-    else:
-        # 尝试作为十六进制文本读取
-        try:
-            hex_content = open(upp_file, 'r').read().strip()
-            return bytes.fromhex(hex_content.replace(" ", "").replace("\n", "").replace("\r", ""))
-        except ValueError:
-            # 作为二进制文件读取
-            return open(upp_file, 'rb').read()
+    text = open(upp_file, 'r').read().strip()
+    return bytes.fromhex(text.replace(" ", "").replace("\n", "").replace("\r", ""))
 
 
-def load_pki_from_pem_der(
-    dp_auth_key_pem: bytes,
-    dp_auth_cert_der: bytes,
-    dp_pb_key_pem: bytes,
-    dp_pb_cert_der: bytes,
-    ci_cert_pem: bytes,
-) -> tuple:
-    """从 PEM/DER 数据加载 PKI"""
-    from src.pki_manager import load_certificate_from_pem
-    
-    dp_auth_key = load_private_key_from_pem(dp_auth_key_pem)
-    dp_auth_cert = load_certificate_from_der(dp_auth_cert_der)
-    dp_pb_key = load_private_key_from_pem(dp_pb_key_pem)
-    dp_pb_cert = load_certificate_from_der(dp_pb_cert_der)
-    ci_cert = load_certificate_from_pem(ci_cert_pem)
-    
-    return (
-        PkiIdentity(dp_auth_key, [dp_auth_cert]),
-        PkiIdentity(dp_pb_key, [dp_pb_cert]),
-        ci_cert,
-    )
+def load_profile_icon(resources_dir: str):
+    """加载 Profile 图标：返回 (icon_bytes, icon_type)。
 
+    对齐 Java 参考脚本（ICON_TYPE_PNG=1 + icon 文件）：StoreMetadata(BF25) 的
+    93/94 字段需要一并提供，本测试卡会校验 storeMetadata 内容。
+    """
+    profiles_dir = os.path.join(resources_dir, "profiles")
+    for name, icon_type in (("icon1.png", 1), ("icon1.jpg", 2), ("icon1.jpeg", 2)):
+        path = os.path.join(profiles_dir, name)
+        if os.path.exists(path):
+            return open(path, 'rb').read(), icon_type
+    return None, 0
+
+
+# ------------------------------------------------------- 执行器
 
 class ProfileDownloadExecutor:
-    """Profile 下载执行器"""
-    
-    def __init__(self, input_data: Dict[str, Any], resources_dir: Optional[str] = None):
+    """一次 Execution 的驱动：Action 批次派发 + 传输层跟进 + 流程推进。
+
+    Session 隔离（Dev Spec v1.1 §7）：每次 `start` 都会新建执行器实例。
+    输出/动作/结束三类事件通过 sink 注入：默认走 Runtime IPC，
+    测试（含真卡连线）可注入自己的 sink 复用同一套循环逻辑。
+    """
+
+    def __init__(self, input_data: Dict[str, Any], resources_dir: Optional[str] = None,
+                 execution_id: str = "local",
+                 action_sink=None, output_sink=None, finish_sink=None):
         self.input = input_data
-        
-        # 初始化 PKI
-        if resources_dir:
-            dp_auth_identity, dp_pb_identity, ci_cert = load_pki_from_resources(resources_dir)
-        else:
-            # 使用输入中的证书数据
-            dp_auth_identity, dp_pb_identity, ci_cert = load_pki_from_pem_der(
-                input_data.get("dp_auth_key_pem", b""),
-                input_data.get("dp_auth_cert_der", b""),
-                input_data.get("dp_pb_key_pem", b""),
-                input_data.get("dp_pb_cert_der", b""),
-                input_data.get("ci_cert_pem", b""),
-            )
-        
-        # 加载 Profile Payload (UPP)
-        if resources_dir:
-            upp_payload = load_profile_payload(resources_dir, input_data["iccid"])
-        else:
-            # 从输入参数获取 (base64 编码或直接传入 hex)
-            upp_payload = input_data.get("upp_payload", b"")
-            if isinstance(upp_payload, str):
-                # 如果是 hex 字符串，转换为 bytes
-                upp_payload = bytes.fromhex(upp_payload.replace(" ", "").replace("\n", ""))
-        
-        # 初始化 Profile Package 存储
+        self.execution_id = execution_id
+        self._action_sink = action_sink or (lambda action: send_action(self.execution_id, action))
+        self._output_sink = output_sink or (
+            lambda level, message, data=None: send_output(self.execution_id, level, message, data))
+        self._finish_sink = finish_sink or (
+            lambda status, data=None, error=None: send_finished(self.execution_id, status, data, error))
+
+        resources_dir = resources_dir or default_resources_dir()
+        pki = load_pki_from_resources(resources_dir)
+        icon_payload, detected_icon_type = load_profile_icon(resources_dir)
+        icon_type = int(input_data.get("icon_type", detected_icon_type if icon_payload else 0))
+        icon = icon_payload if icon_type > 0 else None
+
         packages = ProfilePackageStore()
-        template = ProfilePackageTemplate(
+        packages.save(ProfilePackageTemplate(
             matching_id=input_data["matching_id"],
             profile_id=input_data["profile_id"],
             profile_name=input_data.get("profile_name", "IoT Profile"),
             iccid=input_data["iccid"],
             service_provider_name=input_data.get("spn", ""),
             profile_class=input_data.get("profile_class", 2),
-            payload=upp_payload,
-        )
-        packages.save(template)
-        
-        # 初始化本地 SM-DP+
+            payload=load_profile_payload(resources_dir, input_data["iccid"]),
+            icon=icon,
+            icon_type=icon_type,
+        ))
+
         self.smdp_plus = LocalSmdpPlus(
             packages=packages,
-            dp_auth_identity=dp_auth_identity,
-            dp_profile_binding_identity=dp_pb_identity,
-            trusted_root_certificate=ci_cert,
+            dp_auth_identity=pki["dp_auth_identity"],
+            dp_profile_binding_identity=pki["dp_pb_identity"],
+            trusted_root_certificate=pki["ci_cert"],
         )
-        
-        # 初始化流程控制器
         self.flow = ProfileDownloadFlow(
             eid=input_data["eid"],
             smdp_address=input_data["smdp_address"],
@@ -292,107 +261,192 @@ class ProfileDownloadExecutor:
             smdp_plus=self.smdp_plus,
             mode=input_data.get("mode", "indirect"),
             eim_id=input_data.get("eim_id"),
+            eim_identity=pki["eim_identity"],
+            eim_initial_counter=int(input_data.get("eim_initial_counter", 1)),
+            eim_enable_counter=int(input_data.get("eim_enable_counter", 2)),
             tac=bytes.fromhex(input_data.get("tac", "00000000")),
-            total_rounds=input_data.get("rounds", 1),
+            total_rounds=int(input_data.get("rounds", 1)),
         )
-        
-        self.execution_id: Optional[str] = None
-        self.current_step: int = 0
-    
-    def start(self, execution_id: str):
-        self.execution_id = execution_id
-        self.current_step = 0
-        
-        send_output(execution_id, "INFO", f"Starting Profile Download - Mode: {self.input.get('mode', 'indirect')}, Rounds: {self.input.get('rounds', 1)}")
-        self._execute_step()
-    
-    def handle_action_result(self, msg: Dict[str, Any]):
-        action_id = msg.get("actionId", "")
-        success = msg.get("success", False)
-        
-        if not success:
-            send_output(self.execution_id, "ERROR", f"APDU failed: {action_id}")
-            send_finished(self.execution_id, "FAILED", error={"code": "APDU_FAILED", "message": f"APDU {action_id} failed"})
-            return
-        
-        # 提取 APDU 响应
-        apdu_response = None
-        sw = None
-        if "rapdu" in msg:
-            rapdu_hex = msg["rapdu"]
-            if rapdu_hex:
-                apdu_response = bytes.fromhex(rapdu_hex)
-                sw = rapdu_hex[-4:].upper() if len(rapdu_hex) >= 4 else None
-        
-        send_output(self.execution_id, "INFO", f"APDU {action_id} succeeded (SW={sw})")
-        self._execute_step(apdu_response, sw)
-    
-    def _execute_step(self, apdu_response: Optional[bytes] = None, sw: Optional[str] = None):
-        try:
-            apdus = self.flow.execute_step(
-                self.current_step,
-                apdu_response=apdu_response,
-                sw=sw
-            )
-            
-            if not apdus:
-                next_step = self.flow.get_current_step()
-                if next_step == -1:
-                    send_output(self.execution_id, "INFO", "Profile download completed successfully")
-                    send_finished(self.execution_id, "SUCCESS", data={
-                        "profile_state": "enabled",
-                        "rounds_completed": self.flow.current_round,
-                    })
-                else:
-                    self.current_step = next_step
-                    self._execute_step()
-            else:
-                for apdu in apdus:
-                    action = build_apdu_action(apdu)
-                    send_action(self.execution_id, action)
-                    send_output(self.execution_id, "INFO", f"Sending APDU: {apdu.to_hex()}")
-                self.current_step = self.flow.get_current_step()
-        
-        except ProfileDownloadError as e:
-            send_output(self.execution_id, "ERROR", f"Profile download error: {e}")
-            send_finished(self.execution_id, "FAILED", error={"code": "PROFILE_DOWNLOAD_ERROR", "message": str(e)})
-        except Exception as e:
-            logger.error(f"Execution error: {e}", exc_info=True)
-            send_output(self.execution_id, "ERROR", f"Internal error: {e}")
-            send_finished(self.execution_id, "FAILED", error={"code": "INTERNAL_ERROR", "message": str(e)})
-    
+
+        self.pending: List[object] = []          # 当前批次未派发的 Action
+        self.pending_data = bytearray()          # 当前 APDU 累积的响应数据（含 61XX/91XX）
+        self.last_cla: Optional[int] = None      # 用于 61XX/91XX 的 CLA
+        self.follow_ups: int = 0
+        self.last_response: Optional[bytes] = None
+        self.last_sw: Optional[str] = None
+        self.finished_status: Optional[str] = None
+        self.finished_data: Optional[Dict[str, Any]] = None
+        self.finished_error: Optional[str] = None
+
+    # ---------------------------------------------------------- 生命周期
+
+    def start(self, execution_id: Optional[str] = None):
+        if execution_id:
+            self.execution_id = execution_id
+        self._output("INFO",
+                     f"Starting Profile Download - Mode: {self.flow.mode}, Rounds: {self.flow.total_rounds}")
+        self._run_flow(None, None)
+
     def stop(self, reason: str = ""):
-        send_output(self.execution_id, "WARN", f"Execution stopped: {reason}")
-        send_finished(self.execution_id, "CANCELLED", error={"code": "CANCELLED", "message": reason})
+        self._output("WARN", f"Execution stopped: {reason}")
+        self._finish("CANCELLED", error=f"CANCELLED: {reason}")
+
+    def _output(self, level: str, message: str, data: Optional[Dict] = None):
+        self._output_sink(level, message, data)
+
+    def _action(self, action):
+        self._action_sink(action)
+
+    def _finish(self, status: str, data: Optional[Dict] = None, error: Optional[str] = None):
+        self.finished_status, self.finished_data, self.finished_error = status, data, error
+        self._finish_sink(status, data, error)
+
+    # ---------------------------------------------------- Action 结果处理
+
+    def handle_action_result(self, msg: Dict[str, Any]):
+        action_id = msg.get("actionId") or ""
+        action_type = msg.get("actionType") or ""
+
+        if not msg.get("success", False):
+            self._fail("ACTION_FAILED",
+                       f"动作 {action_id} 执行失败：{msg.get('error') or 'unknown error'}")
+            return
+
+        if action_type == "APDU":
+            self._handle_apdu_result(action_id, msg.get("response") or {})
+        elif action_type == "RESET_CARD":
+            self.flow.atr = msg.get("atr")
+            self._output("INFO", f"卡片已冷复位 ATR={msg.get('atr')}")
+            self._reset_transport_state()
+            self._pump(b"", "9000")
+        elif action_type == "WAIT":
+            self._pump(self.last_response, self.last_sw)
+        else:
+            self._pump(self.last_response, self.last_sw)
+
+    def _handle_apdu_result(self, action_id: str, response: Dict[str, Any]):
+        data = bytes(response.get("data") or [])
+        sw = int(response.get("sw") or 0)
+        self.pending_data += data
+
+        sw1, sw2 = (sw >> 8) & 0xFF, sw & 0xFF
+
+        # T=0 大响应：61XX 需 GET RESPONSE（Runtime 只做单条 APDU 透传，不自动跟进）
+        if sw1 == 0x61 and self.follow_ups < MAX_TRANSPORT_FOLLOW_UPS:
+            self.follow_ups += 1
+            le = sw2 or 256
+            self._action(ApduCommand(cla=self.last_cla or 0x00, ins=0xC0, p1=0x00, p2=0x00, le=le,
+                                     action_id=f"{action_id}.get-response",
+                                     name="GET RESPONSE",
+                                     description="T=0 大响应后续读取"))
+            return
+
+        # eUICC 异步响应：91XX 需 FETCH
+        if sw1 == 0x91 and self.follow_ups < MAX_TRANSPORT_FOLLOW_UPS:
+            self.follow_ups += 1
+            le = sw2 or 256
+            self._action(ApduCommand(cla=0x80 | ((self.last_cla or 0x00) & 0x0F), ins=0x12,
+                                     p1=0x00, p2=0x00, le=le,
+                                     action_id=f"{action_id}.fetch",
+                                     name="FETCH",
+                                     description="eUICC 异步响应 FETCH"))
+            return
+
+        response_bytes = bytes(self.pending_data)
+        sw_str = f"{sw:04X}"
+        self._reset_transport_state()
+        self.last_response, self.last_sw = response_bytes, sw_str
+        self._output("INFO", f"{action_id} 完成 SW={sw_str} (data={len(response_bytes)}B)")
+        self._pump(response_bytes, sw_str)
+
+    def _reset_transport_state(self):
+        self.pending_data = bytearray()
+        self.follow_ups = 0
+
+    # --------------------------------------------------------- 流程推进
+
+    def _pump(self, response: Optional[bytes], sw: Optional[str]):
+        """先派发当前批次剩余 Action；批次结束后再让流程产出下一批。"""
+        if self.pending:
+            self._dispatch(self.pending.pop(0))
+            return
+        self._run_flow(response, sw)
+
+    def _dispatch(self, action):
+        self.last_cla = getattr(action, "cla", None)
+        self._action(action)
+
+    def _run_flow(self, response: Optional[bytes], sw: Optional[str]):
+        try:
+            for _ in range(MAX_EMPTY_STEPS):
+                actions = self.flow.execute_step(self.flow.get_current_step(), response, sw)
+                if self.flow.finished or self.flow.get_current_step() == -1:
+                    self._finish_success()
+                    return
+                if actions:
+                    self.pending = list(actions)
+                    self._dispatch(self.pending.pop(0))
+                    return
+                # 空批次（校验/轮次等步骤）：沿用同一响应继续推进
+                self._output("INFO", "步骤完成（无动作）")
+        except ProfileDownloadError as e:
+            self._fail("PROFILE_DOWNLOAD_ERROR", str(e))
+            return
+        except Exception as e:  # 协议/编码等未预期错误
+            logger.error(f"Flow error: {e}", exc_info=True)
+            self._fail("INTERNAL_ERROR", str(e))
+            return
+        self._fail("INTERNAL_ERROR", "流程未推进，疑似死循环（MAX_EMPTY_STEPS 超限）")
+
+    def _finish_success(self):
+        summary = self.flow.result_summary()
+        if summary.get("verified"):
+            self._output("INFO",
+                         f"Profile 已启用：ICCID={summary['iccid']} State=ENABLED")
+        else:
+            self._output("WARN",
+                         f"流程执行完成，但 profileState={summary.get('profile_state')}"
+                         f"（未达 ENABLED）；notes="
+                         f"{summary.get('warnings') or summary.get('enable_result_note')}")
+        self._finish("SUCCESS", data=summary)
+
+    def _fail(self, code: str, message: str):
+        self._output("ERROR", message)
+        self._finish("FAILED", error=f"{code}: {message}")
 
 
 def main():
     executor: Optional[ProfileDownloadExecutor] = None
-    
+
     while True:
         msg = read_message()
         if msg is None:
             break
-        
+
         msg_type = msg.get("type")
-        
+
         if msg_type == "start":
             execution_id = msg["executionId"]
-            input_data = msg.get("input", {})
-            
-            error = validate_input(input_data)
+            input_data = msg.get("input", {}) or {}
+
+            error = check_runtime_dependencies() or validate_input(input_data)
             if error:
-                send_finished(execution_id, "FAILED", error={"code": "INVALID_INPUT", "message": error})
+                send_finished(execution_id, "FAILED", error=f"INVALID_INPUT: {error}")
                 continue
-            
-            resources_dir = input_data.get("resources_dir")
-            executor = ProfileDownloadExecutor(input_data, resources_dir)
-            executor.start(execution_id)
-        
+
+            try:
+                executor = ProfileDownloadExecutor(input_data, input_data.get("resources_dir"),
+                                                   execution_id=execution_id)
+            except Exception as e:  # 资源/PKI/eIM 等初始化失败
+                logger.error(f"Executor init failed: {e}", exc_info=True)
+                send_finished(execution_id, "FAILED", error=f"INIT_FAILED: {e}")
+                continue
+            executor.start()
+
         elif msg_type == "action_result":
             if executor:
                 executor.handle_action_result(msg)
-        
+
         elif msg_type == "stop":
             if executor:
                 executor.stop(msg.get("reason", ""))

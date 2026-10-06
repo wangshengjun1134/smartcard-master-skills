@@ -249,3 +249,23 @@ def encode_bpp_store_objects(bpp: bytes) -> List[bytes]:
                 objects.append(child[2])
     return objects
 
+
+def segment_bpp_store_objects(bpp: bytes, max_chunk: int = 255) -> List[tuple]:
+    """BF36 的 StoreData 命令序列：ASN.1 对象切分 + 每个对象内 ≤max_chunk 分块。
+
+    返回 [(block_number, p1, data), ...]：
+      * `block_number` 在每个 StoreData 对象内从 0 重新计数
+      * `p1` = 0x91 表示该对象的最后一块，否则 0x11
+
+    对齐 Java `ES10ApduChannel.encodeBoundProfilePackageCommands`。
+    """
+    from .utils import chunk_bytes
+
+    commands: List[tuple] = []
+    for obj in encode_bpp_store_objects(bpp):
+        chunks = chunk_bytes(obj, max_chunk)
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            commands.append((index, 0x91 if is_last else 0x11, chunk))
+    return commands
+

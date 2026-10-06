@@ -52,16 +52,22 @@ def _int_content(value: int) -> bytes:
 
 
 def _read_tag(data: bytes, pos: int):
+    if pos >= len(data):
+        raise Sgp32CodecError("BER-TLV truncated (tag)")
     first = data[pos]
     pos += 1
     tag = first
     if (first & 0x1F) == 0x1F:
+        if pos >= len(data):
+            raise Sgp32CodecError("BER-TLV truncated (multi-byte tag)")
         tag = (tag << 8) | data[pos]
         pos += 1
     return tag, pos
 
 
 def _read_length(data: bytes, pos: int):
+    if pos >= len(data):
+        raise Sgp32CodecError("BER-TLV truncated (length)")
     first = data[pos]
     pos += 1
     if (first & 0x80) == 0:
@@ -71,12 +77,16 @@ def _read_length(data: bytes, pos: int):
         raise Sgp32CodecError("unsupported BER-TLV length form")
     length = 0
     for _ in range(count):
+        if pos >= len(data):
+            raise Sgp32CodecError("BER-TLV truncated (long-form length)")
         length = (length << 8) | data[pos]
         pos += 1
     return length, pos
 
 
 def _read_int(data: bytes, pos: int, length: int) -> int:
+    if pos + length > len(data):
+        raise Sgp32CodecError("BER-TLV truncated (INTEGER value)")
     value = 0
     for i in range(length):
         value = (value << 8) | data[pos + i]

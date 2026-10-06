@@ -6,14 +6,24 @@ from dataclasses import dataclass
 
 @dataclass
 class ApduCommand:
-    """APDU 命令"""
+    """APDU 命令（Skill Action 的一种）
+
+    元数据字段对齐 Runtime IPC：`id` / `name` / `description` / `sensitive`
+    （Dev Spec v1.1 §12：用于 Agent UI 与执行 Trace）。
+    """
     cla: int
     ins: int
     p1: int
     p2: int
     data: Optional[bytes] = None
     le: Optional[int] = None
-    
+    action_id: Optional[str] = None
+    name: str = ""
+    description: str = ""
+    sensitive: bool = False
+
+    ACTION_TYPE = "APDU"
+
     def to_hex(self) -> str:
         """转为十六进制字符串"""
         cmd = f"{self.cla:02X}{self.ins:02X}{self.p1:02X}{self.p2:02X}"
@@ -52,19 +62,10 @@ class ApduResponse:
         return self.sw2 if self.needs_fetch else 0
 
 
-def cold_reset() -> ApduCommand:
-    """冷启动 RESET"""
-    return ApduCommand(cla=0x00, ins=0x00, p1=0x00, p2=0x00)
-
-
-def reset() -> ApduCommand:
-    """温启动 RESET"""
-    return ApduCommand(cla=0x00, ins=0x00, p1=0x00, p2=0x00)
-
-
 def select_mf(channel: int = 0) -> ApduCommand:
     """SELECT MF"""
-    return ApduCommand(cla=channel, ins=0xA4, p1=0x00, p2=0x04, data=bytes([0x3F, 0x00]))
+    return ApduCommand(cla=channel, ins=0xA4, p1=0x00, p2=0x04, data=bytes([0x3F, 0x00]),
+                       name="SELECT MF", description="选择 MF（3F00）")
 
 
 def select_mf_retry(channel: int = 0) -> ApduCommand:

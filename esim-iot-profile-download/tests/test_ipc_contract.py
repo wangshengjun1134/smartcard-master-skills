@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -170,6 +171,54 @@ def follow_up_responder():
             return 0x9110, bytes.fromhex("0304"), {}
         return 0x9000, b"", {}
     return respond
+
+
+SYSTEM_PYTHON = "/usr/bin/python3"      # 缺 pyasn1，用于验证「缺依赖」路径
+
+
+def _drive_start(input_data, interpreter=None, env_overrides=None, timeout=60):
+    """启动 main.py 子进程，喂一条 start，收集输出直到 execution_finished。"""
+    env = dict(os.environ)
+    env.update(env_overrides or {})
+    env.pop("ESIM_SKILL_AUTO_INSTALL", None)
+    env.pop("ESIM_SKILL_VENV_ACTIVE", None)
+    process = subprocess.Popen(
+        [interpreter or sys.executable, MAIN], cwd=ROOT, env=env, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    outputs = []
+    finished = None
+    try:
+        process.stdin.write(json.dumps({
+            "type": "start", "executionId": "exec-env", "skillId": SKILL_ID,
+            "input": input_data, "cardSession": {"readerId": None, "atr": None, "connected": False},
+        }) + "\n")
+        process.stdin.flush()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = process.stdout.readline()
+            if not line:
+                break
+            msg = json.loads(line)
+            if msg.get("type") == "output":
+                outputs.append(msg)
+            elif msg.get("type") == "execution_finished":
+                finished = msg
+                break
+    finally:
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        for stream in (process.stdout, process.stderr):
+            try:
+                stream.close()
+            except Exception:
+                pass
+    return finished, outputs
 
 
 class TestIpcContract(unittest.TestCase):
@@ -370,25 +419,78 @@ class TestRuntimeEnvironmentBootstrap(unittest.TestCase):
         # 测试进程（venv）应具备运行依赖
         self.assertTrue(self.skill_main.current_interpreter_has_dependencies())
 
-    def test_missing_venv_reports_and_exits(self):
-        """无自带环境且未允许自动安装 → 输出自检信息并以退出码 3 结束"""
+    def test_missing_env_reports_env_not_ready(self):
+        """缺依赖且无自带环境 → 业务操作返回 FAILED ENV_NOT_READY（不再以退出码 3 静默退出）"""
+        import tempfile
 
-        script = (
-            "import main, os, sys;"
-            "main.current_interpreter_has_dependencies = lambda: False;"
-            "main.interpreter_has_dependencies = lambda exe, timeout=30: False;"
-            "main.ensure_runtime_environment()"
+        with tempfile.TemporaryDirectory() as tmp:
+            finished, outputs = _drive_start(
+                {"operation": "install_and_enable", "eid": "89049032123451234512345678901235",
+                 "smdp_address": "a", "matching_id": "matching", "iccid": "8929901012345678905",
+                 "profile_id": "A0000005591010FFFFFFFF8900001000"},
+                interpreter=SYSTEM_PYTHON,
+                env_overrides={"SKILL_PACKAGE_PATH": tmp,
+                               "ESIM_SKILL_VENV": os.path.join(tmp, "nope")},
+            )
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "FAILED")
+        self.assertIn("ENV_NOT_READY", finished["error"])
+        self.assertIn("setup_env", finished["error"])
+
+    def test_setup_env_available_without_dependencies(self):
+        """缺依赖时仍能执行 setup_env（只用标准库路径），安装方式走 uv"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_bin = os.path.join(tmp, "bin")
+            os.makedirs(stub_bin)
+            real_python = sys.executable          # 具备依赖的解释器（模拟 uv 装出来的环境）
+            uv_stub = os.path.join(stub_bin, "uv")
+            # 伪 uv：venv → 造出一个可用的解释器 shim（转发到测试解释器，即"已装好依赖"的环境）；
+            #          pip → 直接成功。用于离线验证 setup_env 的 uv 分支与依赖校验逻辑。
+            with open(uv_stub, "w") as fh:
+                fh.write("#!/bin/sh\n"
+                         "case \"$1\" in\n"
+                         "  venv)\n"
+                         "    dir=\"$2\"; mkdir -p \"$dir/bin\"\n"
+                         "    printf 'home = /usr\ninclude-system-site-packages = false\n' > \"$dir/pyvenv.cfg\"\n"
+                         "    printf '#!/bin/sh\\nexec " + real_python + " \"$@\"\\n' > \"$dir/bin/python\"\n"
+                         "    chmod +x \"$dir/bin/python\" ;;\n"
+                         "  pip) exit 0 ;;\n"
+                         "esac\n"
+                         "exit 0\n")
+            os.chmod(uv_stub, 0o755)
+
+            package_dir = os.path.join(tmp, "pkg")
+            os.makedirs(package_dir)
+            with open(os.path.join(package_dir, "requirements.txt"), "w") as fh:
+                fh.write("cryptography\npyasn1\n")
+
+            finished, outputs = _drive_start(
+                {"operation": "setup_env"},
+                interpreter=SYSTEM_PYTHON,
+                env_overrides={"SKILL_PACKAGE_PATH": package_dir,
+                               "ESIM_SKILL_VENV": os.path.join(tmp, "nope"),
+                               "PATH": stub_bin + os.pathsep + os.environ.get("PATH", "")},
+            )
+
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "SUCCESS", finished.get("error"))
+        data = finished.get("data") or {}
+        self.assertEqual(data.get("method"), "uv")
+        self.assertEqual(data.get("status"), "installed")
+        self.assertTrue(str(data.get("env_path", "")).endswith(os.path.join("pkg", ".venv")))
+        self.assertIn("pyasn1", data.get("dependencies") or {})
+
+    def test_setup_env_already_satisfied(self):
+        """已有环境时 setup_env 直接返回 already_satisfied（不重复安装）"""
+        finished, outputs = _drive_start(
+            {"operation": "setup_env"},
+            env_overrides={"SKILL_PACKAGE_PATH": ROOT},
         )
-        env = dict(os.environ)
-        env["SKILL_PACKAGE_PATH"] = "/tmp/does-not-exist-skill-pkg"
-        env.pop("ESIM_SKILL_AUTO_INSTALL", None)
-        completed = subprocess.run(
-            [sys.executable, "-c", script], cwd=ROOT, env=env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        self.assertEqual(completed.returncode, 3)
-        self.assertIn("缺少运行依赖", completed.stderr)
-        self.assertIn("setup-venv.sh", completed.stderr)
+        self.assertIsNotNone(finished)
+        self.assertEqual(finished["status"], "SUCCESS", finished.get("error"))
+        self.assertEqual((finished.get("data") or {}).get("status"), "already_satisfied")
 
     def test_switches_to_package_venv_when_current_lacks_deps(self):
         """当前解释器缺依赖、自带环境可用 → os.execv 切换到自带环境解释器"""
@@ -408,7 +510,7 @@ class TestRuntimeEnvironmentBootstrap(unittest.TestCase):
                 "main.current_interpreter_has_dependencies = lambda: False;"
                 "main.interpreter_has_dependencies = lambda exe, timeout=30: os.path.exists(exe);"
                 "main.os.execv = lambda exe, argv: record.append((exe, argv));"
-                "main.ensure_runtime_environment();"
+                "main.bootstrap_runtime_environment();"
                 "print(record[0][0]);"
                 "print(record[0][1][1]);"
                 "print(os.environ.get('ESIM_SKILL_VENV_ACTIVE'))"

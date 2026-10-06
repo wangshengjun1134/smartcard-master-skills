@@ -343,5 +343,89 @@ class TestFlowSemantics(unittest.TestCase):
             )
 
 
+class TestRuntimeEnvironmentBootstrap(unittest.TestCase):
+    """技能自带运行环境自检（Runtime 不管理依赖，入口需自行切换到自带环境）"""
+
+    def setUp(self):
+        import main as skill_main
+        self.skill_main = skill_main
+
+    def test_venv_candidates_order_and_override(self):
+        package_dir = "/tmp/skill-pkg"
+        candidates = self.skill_main.venv_python_candidates(package_dir)
+        self.assertEqual(candidates[:2], [
+            "/tmp/skill-pkg/.venv/bin/python",
+            "/tmp/skill-pkg/.venv/Scripts/python.exe",
+        ])
+        self.assertIn("/tmp/skill-pkg/venv/bin/python", candidates)
+        # ESIM_SKILL_VENV 覆盖优先
+        os.environ["ESIM_SKILL_VENV"] = "/opt/esim-env"
+        try:
+            overridden = self.skill_main.venv_python_candidates(package_dir)
+            self.assertEqual(overridden[0], "/opt/esim-env/bin/python")
+        finally:
+            del os.environ["ESIM_SKILL_VENV"]
+
+    def test_current_interpreter_has_dependencies(self):
+        # 测试进程（venv）应具备运行依赖
+        self.assertTrue(self.skill_main.current_interpreter_has_dependencies())
+
+    def test_missing_venv_reports_and_exits(self):
+        """无自带环境且未允许自动安装 → 输出自检信息并以退出码 3 结束"""
+
+        script = (
+            "import main, os, sys;"
+            "main.current_interpreter_has_dependencies = lambda: False;"
+            "main.interpreter_has_dependencies = lambda exe, timeout=30: False;"
+            "main.ensure_runtime_environment()"
+        )
+        env = dict(os.environ)
+        env["SKILL_PACKAGE_PATH"] = "/tmp/does-not-exist-skill-pkg"
+        env.pop("ESIM_SKILL_AUTO_INSTALL", None)
+        completed = subprocess.run(
+            [sys.executable, "-c", script], cwd=ROOT, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(completed.returncode, 3)
+        self.assertIn("缺少运行依赖", completed.stderr)
+        self.assertIn("setup-venv.sh", completed.stderr)
+
+    def test_switches_to_package_venv_when_current_lacks_deps(self):
+        """当前解释器缺依赖、自带环境可用 → os.execv 切换到自带环境解释器"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_bin = os.path.join(tmp, ".venv", "bin")
+            os.makedirs(venv_bin)
+            fake_python = os.path.join(venv_bin, "python")
+            with open(fake_python, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")   # 依赖探测（import ...）视为成功
+            os.chmod(fake_python, 0o755)
+
+            script = (
+                "import main, os;"
+                "record = [];"
+                "main.current_interpreter_has_dependencies = lambda: False;"
+                "main.interpreter_has_dependencies = lambda exe, timeout=30: os.path.exists(exe);"
+                "main.os.execv = lambda exe, argv: record.append((exe, argv));"
+                "main.ensure_runtime_environment();"
+                "print(record[0][0]);"
+                "print(record[0][1][1]);"
+                "print(os.environ.get('ESIM_SKILL_VENV_ACTIVE'))"
+            )
+            env = dict(os.environ)
+            env["SKILL_PACKAGE_PATH"] = tmp
+            env.pop("ESIM_SKILL_VENV_ACTIVE", None)
+            completed = subprocess.run(
+                [sys.executable, "-c", script], cwd=ROOT, env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            lines = completed.stdout.strip().splitlines()
+            self.assertEqual(lines[0], fake_python)
+            self.assertTrue(lines[1].endswith("main.py"))
+            self.assertEqual(lines[2], "1")     # 防重入标记
+
+
 if __name__ == '__main__':
     unittest.main()

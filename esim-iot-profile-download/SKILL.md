@@ -10,23 +10,37 @@ description: IoT eSIM Profile 下载与启用（内嵌本地 SM-DP+，直接模�
 `IOT_PERF_TEST_Install_Enable_Profile`（`ScriptTaskProcesser`），对应 SGP.33
 4.2.21.2.1 `TC_eUICC_ES10b_EnableProfile_Case3`。
 
-## 运行环境
+## 运行环境（技能自带）
 
-- Python 3.10+，依赖见 `requirements.txt`（`cryptography`、`pyasn1`）
-- Runtime 通过 `ProcessPythonHost` 以 **`python`**（不是 `python3`）启动入口文件，
-  **不会自动安装依赖**，也不使用技能包内的虚拟环境。请确保该解释器具备上述依赖：
-  ```bash
-  pip install -r requirements.txt     # 用 Runtime 实际使用的 python 执行
-  ```
-- 证书/Profile 资源目录：默认取环境变量 `SKILL_PACKAGE_PATH` 下的 `resources/`
-  （可用输入参数 `resources_dir` 覆盖），内含：
-  - `certs/SK_S_SM_DPauth_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPauth_ECDSA_NIST.der`
-  - `certs/SK_S_SM_DPpb_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPpb_ECDSA_NIST.der`
-  - `certs/CERT_CI_ECDSA_NIST.pem`
-  - `certs/SK_EIM_ECDSA_NIST.pem`、`certs/CERT_EIM_ECDSA_NIST.der`（间接模式必需）
-  - `profiles/PROFILE_OPERATIONAL1_<ICCID>.HEX`（UPP）
-  - `profiles/icon1.png`（Profile 图标；StoreMetadata(BF25) 的 93/94 字段需要，本测试卡会校验）
-- 技能包**不要打包** `venv/`、`__pycache__/`、`tests/card_run_*.log`（仅本地开发/测试产物）
+Runtime 只以 **`python <entry>`**（`ProcessPythonHost`）启动本技能，**不安装依赖、不使用技能包内的
+虚拟环境**（Design v2.4 §9：Runtime 不修改执行环境）。因此依赖环境由**技能自己维护**：
+
+1. **准备环境（推荐，一次性）**
+   ```bash
+   bash scripts/setup-venv.sh        # 在技能包内创建 .venv 并安装 requirements.txt
+   ```
+   Windows（PowerShell）：`python -m venv .venv; .venv\Scripts\python -m pip install -r requirements.txt`
+
+2. **入口自动切换**：`main.py` 在导入业务模块前做依赖自检；若当前解释器缺少
+   `cryptography`/`pyasn1`，会自动切到技能包自带环境并重新执行本进程
+   （`os.execv`，stdin/stdout 保留，IPC 不受影响）：
+   - 查找顺序：`$ESIM_SKILL_VENV` → `<技能包>/.venv` → `<技能包>/venv`（兼容 POSIX 与 Windows 布局）
+   - 都不可用时输出可操作的自检信息并以退出码 3 结束（Runtime 会报 FAILED 并透出 stderr）
+   - `ESIM_SKILL_AUTO_INSTALL=1` 时允许技能首次运行自动创建 `.venv` 并 `pip install`（默认关闭，
+     以免隐式联网/改环境）
+
+3. **前置条件**：Runtime 侧需有名为 `python` 的可执行文件（Ubuntu 可 `sudo apt install python-is-python3`
+   或自行加软链）；技能包内的虚拟环境**不要打包分发**（`.gitignore` 已忽略 `venv/`、`.venv/`，
+   各机器按第 1 步生成）
+
+4. **证书/Profile 资源目录**：默认取环境变量 `SKILL_PACKAGE_PATH` 下的 `resources/`
+   （可用输入参数 `resources_dir` 覆盖），内含：
+   - `certs/SK_S_SM_DPauth_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPauth_ECDSA_NIST.der`
+   - `certs/SK_S_SM_DPpb_ECDSA_NIST.pem`、`certs/CERT_S_SM_DPpb_ECDSA_NIST.der`
+   - `certs/CERT_CI_ECDSA_NIST.pem`
+   - `certs/SK_EIM_ECDSA_NIST.pem`、`certs/CERT_EIM_ECDSA_NIST.der`（间接模式必需）
+   - `profiles/PROFILE_OPERATIONAL1_<ICCID>.HEX`（UPP）
+   - `profiles/icon1.png`（Profile 图标；StoreMetadata(BF25) 的 93/94 字段需要，本测试卡会校验）
 
 ## IPC 契约
 
@@ -138,6 +152,7 @@ esim-iot-profile-download/
 ├── skill.json                # Runtime 元数据（skillId=esim.iot-profile-download）
 ├── main.py                   # 入口：IPC 协议 + 执行器（Action 批次 / 传输层跟进）
 ├── requirements.txt          # 运行依赖
+├── scripts/setup-venv.sh     # 生成技能自带虚拟环境（.venv）
 ├── resources/                # 证书与 Profile 资源
 ├── src/                      # 协议逻辑（ASN.1 / SCP03t / SM-DP+ / eIM / 流程）
 └── tests/                    # 离线测试 + 真卡连线测试

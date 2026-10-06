@@ -34,14 +34,18 @@ IoT eSIM Profile 下载与启用 Skill（内嵌本地 SM-DP+ 实现）。
 - 传输层 61XX/91XX 由 Skill 自动跟进：`61XX` → `GET RESPONSE`、`91XX` → `FETCH`
 - 结果不硬编码：`execution_finished.data.profile_state` 来自 `GetProfilesInfo` 的 `9F70`
 
-## 安装
+## 安装（技能自带运行环境）
+
+Runtime 只以 `python <entry>` 启动技能、**不管依赖**（Design v2.4 §9），因此环境由技能自己维护：
 
 ```bash
-# 用 Runtime 实际使用的 python 解释器（ProcessPythonHost 用 `python`）
-pip install -r requirements.txt
+bash scripts/setup-venv.sh     # 在技能包内创建 .venv 并安装 requirements.txt
 ```
 
-运行环境要求（`python` 命令、依赖、`SKILL_PACKAGE_PATH`）见 [SKILL.md](SKILL.md#运行环境)。
+`main.py` 入口会自动检测依赖：当前解释器缺依赖时切到技能包自带环境（`$ESIM_SKILL_VENV`
+→ `<package>/.venv` → `<package>/venv`）并重新执行本进程；均不可用时输出自检信息并以退出码 3 结束。
+`ESIM_SKILL_AUTO_INSTALL=1` 可让技能首次运行自动创建 `.venv` 并安装依赖（默认关闭）。
+前置条件：Runtime 侧需有 `python` 可执行文件。详见 [SKILL.md](SKILL.md#运行环境技能自带)。
 
 ## 使用
 
@@ -94,6 +98,7 @@ esim-iot-profile-download/
 ├── skill.json                   # Runtime 元数据
 ├── main.py                      # IPC 入口 + 执行器（Action 批次 / 传输层跟进）
 ├── requirements.txt             # 运行依赖（cryptography / pyasn1）
+├── scripts/setup-venv.sh        # 技能自带虚拟环境生成脚本
 ├── src/
 │   ├── skill_actions.py         # Action 模型（APDU / RESET_CARD / WAIT → IPC JSON）
 │   ├── apdu_builder.py          # APDU 命令构建器

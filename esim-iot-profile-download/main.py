@@ -10,15 +10,134 @@
   * action_result.response = { sw: number, data: number[] }；RESET_CARD 结果带 atr
   * execution_finished.error 为字符串；日志一律写 stderr（stdout 只输出 JSON）
   * Skill 不直接操作读卡器：所有卡片操作都以 Action（APDU / RESET_CARD / WAIT）交给 Runtime
+
+运行环境：Runtime（`ProcessPythonHost`）只以 `python <entry>` 启动本文件，不安装依赖、
+也不使用技能包内的虚拟环境（Design v2.4 §9：Runtime 不改执行环境）。因此**技能自行维护
+自己的 Python 环境**：入口在导入业务模块前做依赖自检，必要时切到技能包自带的虚拟环境
+（`<package>/.venv`，见 `scripts/setup-venv.sh`）重新执行本进程。
 """
 
 import json
+import importlib.util
 import os
+import subprocess
 import sys
 import logging
 from typing import Any, Dict, List, Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+REQUIRED_MODULES = ("cryptography", "pyasn1")
+
+_VENV_ACTIVE_ENV = "ESIM_SKILL_VENV_ACTIVE"
+_VENV_DIR_ENV = "ESIM_SKILL_VENV"
+_AUTO_INSTALL_ENV = "ESIM_SKILL_AUTO_INSTALL"
+_VENV_DIR_NAMES = (".venv", "venv")
+
+
+def venv_python_candidates(package_dir: str) -> List[str]:
+    """技能自带虚拟环境的解释器候选路径（支持 POSIX 与 Windows 布局）。
+
+    `ESIM_SKILL_VENV` 指定的目录优先，其次 `<package>/.venv`、`<package>/venv`。
+    """
+    roots = []
+    override = os.environ.get(_VENV_DIR_ENV)
+    if override:
+        roots.append(override)
+    roots.extend(os.path.join(package_dir, name) for name in _VENV_DIR_NAMES)
+
+    candidates = []
+    for root in roots:
+        candidates.append(os.path.join(root, "bin", "python"))
+        candidates.append(os.path.join(root, "Scripts", "python.exe"))
+    return candidates
+
+
+def current_interpreter_has_dependencies() -> bool:
+    """当前解释器是否具备运行依赖（只做查找，不导入）。"""
+    return all(importlib.util.find_spec(module) is not None for module in REQUIRED_MODULES)
+
+
+def interpreter_has_dependencies(python_exe: str, timeout: int = 30) -> bool:
+    """指定解释器是否具备运行依赖（子进程探测，避免污染当前进程）。"""
+    if not os.path.exists(python_exe):
+        return False
+    try:
+        completed = subprocess.run(
+            [python_exe, "-c", "import " + ", ".join(REQUIRED_MODULES)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=timeout, check=False,
+        )
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def create_package_venv(package_dir: str) -> Optional[str]:
+    """在技能包内创建虚拟环境并安装运行依赖（仅当显式允许时调用）。
+
+    返回可用解释器路径；失败返回 None。
+    """
+    venv_dir = os.path.join(package_dir, ".venv")
+    requirements = os.path.join(package_dir, "requirements.txt")
+    try:
+        print(f"[bootstrap] 创建技能自带虚拟环境：{venv_dir}", file=sys.stderr)
+        subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True)
+        candidates = [path for path in venv_python_candidates(package_dir)
+                      if path.startswith(venv_dir) and os.path.exists(path)]
+        if not candidates:
+            print("[bootstrap] 虚拟环境创建后未找到解释器", file=sys.stderr)
+            return None
+        python_exe = candidates[0]
+        subprocess.run([python_exe, "-m", "pip", "install", "--upgrade", "pip"], check=True)
+        subprocess.run([python_exe, "-m", "pip", "install", "-r", requirements], check=True)
+        return python_exe
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[bootstrap] 自动安装依赖失败：{e}", file=sys.stderr)
+        return None
+
+
+def ensure_runtime_environment() -> None:
+    """确保技能使用具备依赖的解释器运行。
+
+    1. 当前解释器已具备依赖 → 直接继续
+    2. 技能包自带虚拟环境具备依赖 → `os.execv` 切换（保留 stdin/stdout，IPC 不受影响）
+    3. 显式允许（`ESIM_SKILL_AUTO_INSTALL=1`）→ 创建 `<package>/.venv` 并安装依赖后切换
+    4. 否则输出可操作的自检信息并以退出码 3 结束（Runtime 会报 FAILED 并透出 stderr）
+    """
+    if os.environ.get(_VENV_ACTIVE_ENV) == "1":
+        return
+    if current_interpreter_has_dependencies():
+        return
+
+    package_dir = os.environ.get("SKILL_PACKAGE_PATH") or PACKAGE_DIR
+    for candidate in venv_python_candidates(package_dir):
+        if interpreter_has_dependencies(candidate):
+            os.environ[_VENV_ACTIVE_ENV] = "1"
+            os.execv(candidate, [candidate, os.path.abspath(__file__), *sys.argv[1:]])
+            return
+
+    if os.environ.get(_AUTO_INSTALL_ENV) == "1":
+        python_exe = create_package_venv(package_dir)
+        if python_exe and interpreter_has_dependencies(python_exe):
+            os.environ[_VENV_ACTIVE_ENV] = "1"
+            os.execv(python_exe, [python_exe, os.path.abspath(__file__), *sys.argv[1:]])
+            return
+
+    missing = ", ".join(m for m in REQUIRED_MODULES if importlib.util.find_spec(m) is None)
+    print(
+        f"[bootstrap] 当前解释器 {sys.executable} 缺少运行依赖：{missing or 'unknown'}\n"
+        f"[bootstrap] 请为技能准备自带环境（推荐）：\n"
+        f"           bash {os.path.join(package_dir, 'scripts', 'setup-venv.sh')}\n"
+        f"           或设置 {_AUTO_INSTALL_ENV}=1 让技能首次运行时自动创建 {os.path.join(package_dir, '.venv')}\n"
+        f"[bootstrap] 若已有虚拟环境在其他位置，可设置 {_VENV_DIR_ENV}=<venv 目录>",
+        file=sys.stderr,
+    )
+    sys.exit(3)
+
+
+ensure_runtime_environment()
+
+sys.path.insert(0, PACKAGE_DIR)
 
 from src.apdu_builder import ApduCommand
 from src.profile_download import ProfileDownloadFlow, ProfileDownloadError
@@ -34,8 +153,6 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger(__name__)
-
-REQUIRED_MODULES = ("cryptography", "pyasn1")
 
 # 单条 APDU 的 61XX/91XX 自动跟进次数上限（防死循环）
 MAX_TRANSPORT_FOLLOW_UPS = 16

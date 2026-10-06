@@ -43,6 +43,22 @@ description: IoT eSIM Profile 下载与启用（内嵌本地 SM-DP+，直接模�
 4. **判读**：以 `profile_state`（来自 `GetProfilesInfo` 的 `9F70`）为准，只有 `verified: true` 才算启用成功；
    技能被禁用时调用返回 `FAILED ... is disabled`
 
+### 上传/分发时的包体要求（桌面端安装器硬限制）
+
+桌面端「插件 → 技能 → 上传」对整包有硬限制：**≤128 个文件、单文件 ≤2MB、总量 ≤6MB、路径深度 ≤16、
+不得含软链或特殊文件**；且**上传时填的名称必须与 SKILL.md 里的 `name` 完全一致**
+（本技能是 `esim-iot-profile-download`，不是 `skill.json` 里的 skillId `esim.iot-profile-download`）。
+
+开发目录里有 `.venv`（uv 环境，400+ 文件且含软链）与 `__pycache__`，直接选目录/ZIP 上传会超限并报
+「技能包无效」。请用打包脚本生成干净 ZIP（只含入库文件，41 个）：
+
+```bash
+bash scripts/make-package.sh        # 输出 <仓库外>/esim-iot-profile-download.zip
+```
+
+装完后需**重启 daemon/桌面端**（Runtime 在启动时扫描技能包目录才会注册为可执行技能）；
+首次执行业务前先 `{"operation": "setup_env"}` 安装技能自带环境（安装出来的副本不含 `.venv`）。
+
 ### 注册与开关
 
 把技能包目录（或软链）放到 agent 的技能目录即可同时完成两侧注册：

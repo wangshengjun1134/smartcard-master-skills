@@ -51,28 +51,9 @@ resources_dir/
 2. `profiles/PROFILE_OPERATIONAL1.HEX` （默认十六进制文件）
 3. `profiles/PROFILE_OPERATIONAL1.bin` （默认二进制文件）
 
-### 输入参数示例
-
-```json
-{
-  "operation": "install_and_enable",
-  "mode": "direct",
-  "eid": "89049032123451234512345678901235",
-  "smdp_address": "testsmdpplus1.example.com",
-  "matching_id": "04386-AGYFT-A74Y8-3F815",
-  "iccid": "8929901012345678905",
-  "profile_id": "A0000005591010FFFFFFFF8900001000",
-  "resources_dir": "/home/user/smartcard-resources",
-  "profile_name": "Operational Profile 1",
-  "spn": "Test SP",
-  "profile_class": 2,
-  "rounds": 1
-}
-```
-
 ---
 
-## 方式二：外部注入（可选覆盖包内默认）
+## 外部注入（可选覆盖包内默认）
 
 适合证书轮换、多租户或不希望密钥随技能包发布的场景。**每一项都可单独注入，未注入的仍取包内默认**；
 值支持 **PEM 文本**或 **base64 编码的 DER**。
@@ -113,7 +94,10 @@ resources_dir/
 
 ---
 
-## 证书生成示例
+## 证书生成示例（仅离线/模拟用）
+
+> ⚠️ 真卡会校验证书链（CI 签发），下面自签名生成的证书**不能**直接用于真机；
+> 真机请使用 `resources/certs/` 里的测试证书，或由 CI 签发的正式证书。
 
 ### 使用 OpenSSL 生成测试证书
 
@@ -170,17 +154,25 @@ A0000005591010FFFFFFFF8900001000
 [二进制数据]
 ```
 
+查看 Profile 内容：
+
+```bash
+cat PROFILE_OPERATIONAL1_8929901012345678905F.HEX      # 十六进制文本
+xxd PROFILE_OPERATIONAL1_8929901012345678905F.HEX | head -20
+ls -lh PROFILE_OPERATIONAL1_8929901012345678905F.HEX
+```
+
 ---
 
-## 完整配置示例
+## 如何运行
 
-### 方式 1：通过 Runtime / Agent（推荐）
+#### 通过 Runtime / Agent（推荐）
 
 技能包注册后（见 SKILL.md「注册与开关」），由 agent 在对话中调用
 `smartcard_execute_skill`（`skillId = esim.iot-profile-download`），或直接调用
 `POST /smartcard/skills/esim.iot-profile-download/execute`，`input` 见 SKILL.md「输入参数」。
 
-### 方式 2：本地真卡调试（测试脚本扮演 Runtime）
+#### 本地真卡调试（测试脚本扮演 Runtime）
 
 ```bash
 pip install -r tests/requirements.txt          # pyscard

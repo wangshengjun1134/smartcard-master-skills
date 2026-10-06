@@ -31,7 +31,7 @@ from .apdu_builder import (
 )
 from .skill_actions import ResetCardAction, WaitAction, with_meta
 from .local_eim import LocalEim
-from .sgp32_codec import verify_add_initial_eim_ok, verify_enable_result_ok, Sgp32CodecError
+from .sgp32_codec import verify_enable_result_ok, Sgp32CodecError
 from .pki_manager import PkiIdentity
 from .smdp_plus import LocalSmdpPlus
 from .asn1_codec import (
@@ -210,7 +210,7 @@ class ProfileDownloadFlow:
                 raise ProfileDownloadError("eim_id is required in indirect mode")
             if eim_identity is None:
                 raise ProfileDownloadError(
-                    "eIM 证书/私钥缺失：indirect 模式需要 CERT_EIM / SK_EIM（见 resources/certs/README.md）"
+                    "eIM 证书/私钥缺失：indirect 模式需要 CERT_EIM / SK_EIM（见 CERTIFICATE_GUIDE.md）"
                 )
             self.eim = LocalEim(eim_identity)
 

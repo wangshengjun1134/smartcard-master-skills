@@ -4,7 +4,6 @@
 打包 eUICC Package（EuiccPackageRequest BF51）并签名，供 eUICC 的 LoadEuiccPackage 执行。
 """
 
-from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding
 
 from . import sgp32_codec as codec

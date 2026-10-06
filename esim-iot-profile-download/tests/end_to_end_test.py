@@ -8,7 +8,7 @@
 用法:
     python3 end_to_end_test.py
     python3 end_to_end_test.py --reader "Reader Name"
-    python3 end_to_end_test.py --input input-example-resources.json
+    python3 end_to_end_test.py --input input-example.json --mode indirect
 """
 
 import argparse
@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_INPUT = os.path.join(os.path.dirname(__file__), 'input-example-resources.json')
+DEFAULT_INPUT = os.path.join(os.path.dirname(__file__), 'input-example.json')
 DEFAULT_RESOURCES = os.path.join(os.path.dirname(__file__), '..', 'resources')
 
 

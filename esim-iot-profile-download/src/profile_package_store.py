@@ -1,7 +1,7 @@
 """Profile Package 存储模块"""
 
 from typing import Optional, Dict, List
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -42,18 +42,7 @@ class ProfilePackageStore:
         if template is None:
             raise ValueError(f"Profile package not found for matching_id: {matching_id}")
         return template
-    
-    def delete(self, matching_id: str) -> bool:
-        """删除 Profile Package"""
-        if matching_id in self._packages:
-            del self._packages[matching_id]
-            return True
-        return False
-    
-    def list_all(self) -> List[ProfilePackageTemplate]:
-        """列出所有 Profile Package"""
-        return list(self._packages.values())
-    
+
     def clear(self):
         """清空存储"""
         self._packages.clear()

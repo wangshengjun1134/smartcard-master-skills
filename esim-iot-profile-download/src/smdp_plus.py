@@ -1,28 +1,17 @@
 """本地 SM-DP+ 实现模块"""
 
 from typing import Optional, Dict, Any, List
-import uuid
 import os
 import logging
 
-from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 from cryptography import x509
 
 from .pki_manager import PkiIdentity, get_subject_key_identifier
-from .asn1_codec import (
-    encode_bf38_authenticate_server_request,
-    encode_bf21_prepare_download_request,
-    encode_smdp_signed2,
-    encode_euicc_info1,
-    decode_prepare_download_response,
-    decode_euicc_info1,
-    decode_bf2e_challenge,
-)
-from .crypto_provider import sign_ecdsa_p256, verify_ecdsa_p256
+from .asn1_codec import encode_smdp_signed2, decode_prepare_download_response, decode_euicc_info1
+from .crypto_provider import sign_ecdsa_p256
 from .profile_package_store import ProfilePackageStore, ProfilePackageTemplate
-from .bpp_generator import BppGenerator
+from .bpp_codec import encode_standard_bpp, segment_bpp_store_objects
 from .state_machine import DownloadSession, DownloadSessionState
-from .utils import bytes_to_hex, hex_to_bytes
 from pyasn1.type import char
 
 logger = logging.getLogger(__name__)
@@ -58,7 +47,6 @@ class LocalSmdpPlus:
         self.trusted_root = trusted_root_certificate
         
         # BPP 生成器
-        self.bpp_generator = BppGenerator(dp_profile_binding_identity, trusted_root_certificate)
         
         # 会话存储
         self._sessions: Dict[str, DownloadSession] = {}
@@ -251,7 +239,6 @@ class LocalSmdpPlus:
             template = self.packages.require_by_matching_id(session.matching_id)
 
             # 4. 生成标准 BF36 BoundProfilePackage（ECKA + SCP03t）
-            from .bpp_codec import encode_standard_bpp
             bpp_der = encode_standard_bpp(
                 transaction_id=transaction_id,
                 eid=session.eid,
@@ -265,7 +252,7 @@ class LocalSmdpPlus:
             session.transition_to(DownloadSessionState.PROFILE_DOWNLOADED)
             
             # 7. 分段
-            segments = self.bpp_generator.segment_bpp(bpp_der)
+            segments = segment_bpp_store_objects(bpp_der)
             session.bpp_total_segments = len(segments)
             session.bpp_segments_sent = 0
             
@@ -291,7 +278,7 @@ class LocalSmdpPlus:
         if session.bpp_data is None:
             raise SmdpPlusError("BPP not generated yet")
         
-        return self.bpp_generator.segment_bpp(session.bpp_data)
+        return segment_bpp_store_objects(session.bpp_data)
     
     def _encode_server_signed1(
         self,
@@ -348,12 +335,4 @@ class LocalSmdpPlus:
     def get_session(self, transaction_id: str) -> Optional[DownloadSession]:
         """获取会话"""
         return self._sessions.get(transaction_id)
-    
-    def clear_session(self, transaction_id: str):
-        """清除会话"""
-        if transaction_id in self._sessions:
-            del self._sessions[transaction_id]
-    
-    def clear_all_sessions(self):
-        """清除所有会话"""
-        self._sessions.clear()
+

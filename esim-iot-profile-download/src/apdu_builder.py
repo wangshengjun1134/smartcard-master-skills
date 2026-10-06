@@ -1,6 +1,6 @@
 """APDU 命令构建器"""
 
-from typing import Optional, List
+from typing import Optional
 from dataclasses import dataclass
 
 
@@ -32,35 +32,6 @@ class ApduCommand:
         if self.le is not None:
             cmd += f"{self.le:02X}"
         return cmd
-
-
-@dataclass
-class ApduResponse:
-    """APDU 响应"""
-    sw1: int
-    sw2: int
-    data: Optional[bytes] = None
-    
-    @property
-    def sw(self) -> str:
-        """SW 码字符串"""
-        return f"{self.sw1:02X}{self.sw2:02X}"
-    
-    @property
-    def is_success(self) -> bool:
-        """是否成功"""
-        return self.sw1 == 0x90 and self.sw2 == 0x00
-    
-    @property
-    def needs_fetch(self) -> bool:
-        """是否需要 FETCH"""
-        return self.sw1 == 0x91
-    
-    @property
-    def fetch_length(self) -> int:
-        """FETCH 长度"""
-        return self.sw2 if self.needs_fetch else 0
-
 
 def select_mf(channel: int = 0) -> ApduCommand:
     """SELECT MF"""

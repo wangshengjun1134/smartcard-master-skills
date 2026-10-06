@@ -7,7 +7,6 @@
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import cmac as _cmac
@@ -166,12 +165,6 @@ class Scp03t:
         counter_block = bytearray(BLOCK_SIZE)
         counter_block[12:16] = counter.to_bytes(4, 'big')
         return _aes_ecb_encrypt(self.keys.s_enc, bytes(counter_block))
-
-
-def encode_tlv(block: Scp03tProtectedBlock) -> bytes:
-    header = _tlv_header(block.tag, len(block.encrypted_data) + MAC_LENGTH)
-    return header + block.encrypted_data + block.mac
-
 
 def _tlv_header(tag: int, length: int) -> bytes:
     out = bytearray([tag])

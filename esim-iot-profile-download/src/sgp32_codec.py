@@ -7,7 +7,7 @@
   - AddInitialEimResponse / EuiccPackageResult(enableResult) 校验
 """
 
-from typing import List, Optional
+from typing import Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
@@ -91,25 +91,6 @@ def _read_int(data: bytes, pos: int, length: int) -> int:
     for i in range(length):
         value = (value << 8) | data[pos + i]
     return value
-
-
-def _strip_outer_sequence(der: bytes) -> bytes:
-    """去掉 DER SEQUENCE 外层 tag+长度，返回内容。"""
-    if not der or len(der) < 2 or der[0] != 0x30:
-        return der
-    pos = 1
-    length = der[pos]
-    pos += 1
-    if length & 0x80:
-        num = length & 0x7F
-        length = 0
-        for i in range(num):
-            length = (length << 8) | der[pos]
-            pos += 1
-    if pos + length != len(der):
-        return der
-    return der[pos:pos + length]
-
 
 def encode_eim_configuration_data(eim_id: str, counter_value: int, eim_cert_der: bytes) -> bytes:
     """EimConfigurationData（eimId + counterValue + eimPublicKeyData）

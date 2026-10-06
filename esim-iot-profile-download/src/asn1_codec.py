@@ -1,7 +1,7 @@
 """ASN.1 DER 编解码模块 - 基于 pyasn1"""
 
-from typing import Optional, List, Dict, Any, Tuple
-from pyasn1.type import univ, namedtype, tag, constraint, char
+from typing import Optional, List, Dict, Any
+from pyasn1.type import univ, namedtype, tag, char
 from pyasn1.codec.der import encoder, decoder
 from pyasn1.error import PyAsn1Error
 
@@ -12,11 +12,6 @@ class Asn1CodecError(Exception):
 
 
 # ========== 基础类型定义 ==========
-
-class OCTET_STRING(univ.OctetString):
-    """扩展的 OCTET STRING"""
-    pass
-
 
 class UTF8String(char.UTF8String):
     """UTF8String"""
@@ -481,48 +476,3 @@ def decode_bf2e_challenge(response: bytes) -> bytes:
 
 # ========== BF37 ProfileInstallationResult 解码 ==========
 
-def decode_bf37_profile_installation_result(response: bytes) -> Optional[str]:
-    """
-    解码 ProfileInstallationResult (BF37)，提取 ISD-P AID
-    """
-    try:
-        pdu, _ = decoder.decode(response)
-    except PyAsn1Error:
-        return None
-    
-    # 查找 profileIdentifier [2] A2
-    try:
-        for i in range(pdu.getSize()):
-            component = pdu.getComponentByPosition(i)
-            if component is None:
-                continue
-            
-            # 检查是否是 A2 tag (profileIdentifier)
-            tag_set = component.getTagSet()
-            for t in tag_set:
-                if t.getTagClass() == tag.tagClassContext and t.getTagNumber() == 2:
-                    # 解析 AID (4F)
-                    if hasattr(component, '__iter__'):
-                        for field in component:
-                            if hasattr(field, '__len__') and len(bytes(field)) == 16:
-                                return bytes(field).hex().upper()
-    except Exception:
-        pass
-    
-    return None
-
-
-# ========== StoreData 编码 ==========
-
-def encode_store_data(block_number: int, is_last: bool, data: bytes) -> bytes:
-    """
-    编码 StoreData 命令数据
-    """
-    # StoreData 数据格式: [81] OCTET STRING (实际数据)
-    try:
-        data_field = univ.OctetString(data).subtype(
-            implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 1)
-        )
-        return encoder.encode(data_field)
-    except PyAsn1Error as e:
-        raise Asn1CodecError(f"Cannot encode StoreData: {e}")

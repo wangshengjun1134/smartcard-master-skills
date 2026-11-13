@@ -450,26 +450,26 @@ def test_complete_flow_indirect_mode(test_env):
 
 def test_apdu_generation():
     """测试 APDU 生成的正确性"""
-    # SELECT MF
-    assert ApduBuilder.select_mf() == "00A40000023F00"
-    
+    # SELECT MF (P2=04 返回 FCI)
+    assert ApduBuilder.select_mf() == "00A40004023F00"
+
     # SELECT ISD-R
     isdr_apdu = ApduBuilder.select_isdr()
     assert "A0000005591010FFFFFFFF8900000100" in isdr_apdu
-    
-    # GetEuiccInfo1
-    assert ApduBuilder.get_euicc_info1() == "80BF200000"
-    
-    # GetEuiccChallenge
-    assert ApduBuilder.get_euicc_challenge() == "80BF2E0000"
-    
-    # GetProfilesInfo
-    assert ApduBuilder.get_profiles_info() == "80BF2D0000"
-    
+
+    # GetEuiccInfo1 (ES10 命令格式)
+    assert ApduBuilder.get_euicc_info1() == "80E2910003BF2000"
+
+    # GetEuiccChallenge (ES10 命令格式)
+    assert ApduBuilder.get_euicc_challenge() == "80E2910003BF2E00"
+
+    # GetProfilesInfo (ES10 命令格式)
+    assert ApduBuilder.get_profiles_info() == "80E2910003BF2D00"
+
     # AddInitialEim
     eim_apdu = ApduBuilder.add_initial_eim("BF5700")
     assert eim_apdu.startswith("80BF5700")
-    
+
     # EnablePSMO
     psmo_apdu = ApduBuilder.enable_psmo("BF5100")
     assert psmo_apdu.startswith("80BF5100")

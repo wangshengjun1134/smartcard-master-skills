@@ -153,7 +153,7 @@ def test_stdin_stdout_direct_mode():
             
             assert reset_response["result"]["status"] == "CONTINUE"
             assert reset_response["result"]["nextAction"]["type"] == "APDU"
-            assert reset_response["result"]["nextAction"]["payload"]["apdu"] == "00A40000023F00"
+            assert reset_response["result"]["nextAction"]["payload"]["apdu"] == "00A40004023F00"
             
             # 4. handleActionResult (SELECT MF) -> TERMINAL CAPABILITY
             mf_response = send_request(proc, {

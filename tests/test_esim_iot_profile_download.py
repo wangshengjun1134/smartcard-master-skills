@@ -84,25 +84,25 @@ def test_state_transitions():
         )
         result = skill.handle_action_result(ctx, reset_result, session)
         assert session.data["state"] == EsimState.WAIT_SELECT_MF
-        assert result.next_action.payload["apdu"] == "00A40000023F00"
+        assert result.next_action.payload["apdu"] == "00A40004023F00"
 
 
 def test_apdu_builder_select_mf():
     """测试 SELECT MF APDU"""
     apdu = ApduBuilder.select_mf()
-    assert apdu == "00A40000023F00"
+    assert apdu == "00A40004023F00"
 
 
 def test_apdu_builder_get_euicc_info():
     """测试 GetEuiccInfo1 APDU"""
     apdu = ApduBuilder.get_euicc_info1()
-    assert apdu == "80BF200000"
+    assert apdu == "80E2910003BF2000"
 
 
 def test_apdu_builder_get_profiles_info():
     """测试 GetProfilesInfo APDU"""
     apdu = ApduBuilder.get_profiles_info()
-    assert apdu == "80BF2D0000"
+    assert apdu == "80E2910003BF2D00"
 
 
 def test_apdu_builder_euicc_memory_reset():

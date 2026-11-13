@@ -28,8 +28,11 @@ class ApduBuilder:
     
     @staticmethod
     def select_mf() -> str:
-        """SELECT MF (Master File)"""
-        return "00A40000023F00"
+        """SELECT MF (Master File)
+        
+        P2=04: 返回 FCI (File Control Information)
+        """
+        return "00A40004023F00"
     
     @staticmethod
     def select_isdr() -> str:
@@ -115,28 +118,36 @@ class ApduBuilder:
     @staticmethod
     def get_euicc_info1() -> str:
         """GetEuiccInfo1 (BF20)
-        
+
         获取 eUICC 信息（EID、默认 SM-DP+ 地址等）
+        
+        ES10 命令格式: 80 E2 91 00 Lc [BF 20 00]
+        注意：无 Le 字段
         """
         cla = 0x80
-        ins = 0xBF
-        p1 = 0x20
+        ins = 0xE2
+        p1 = 0x91
         p2 = 0x00
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
-    
+        data = "BF2000"
+        lc = len(data) // 2
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
+
     @staticmethod
     def get_euicc_challenge() -> str:
         """GetEuiccChallenge (BF2E)
-        
+
         获取 eUICC 挑战值（用于认证）
+        
+        ES10 命令格式: 80 E2 91 00 Lc [BF 2E 00]
+        注意：无 Le 字段
         """
         cla = 0x80
-        ins = 0xBF
-        p1 = 0x2E
+        ins = 0xE2
+        p1 = 0x91
         p2 = 0x00
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
+        data = "BF2E00"
+        lc = len(data) // 2
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
     def authenticate_server(auth_data: str) -> str:
@@ -208,33 +219,38 @@ class ApduBuilder:
     @staticmethod
     def get_profiles_info() -> str:
         """GetProfilesInfo (BF2D)
-        
+
         获取 Profile 信息（包括 Profile 状态）
+        
+        ES10 命令格式: 80 E2 91 00 Lc [BF 2D 00]
+        注意：无 Le 字段
         """
         cla = 0x80
-        ins = 0xBF
-        p1 = 0x2D
+        ins = 0xE2
+        p1 = 0x91
         p2 = 0x00
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
+        data = "BF2D00"
+        lc = len(data) // 2
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     # ========== 清理相关 APDU ==========
     
     @staticmethod
     def euicc_memory_reset() -> str:
         """EuiccMemoryReset (BF34)
-        
+
         重置 eUICC 内存，清除之前的下载状态
+        
+        ES10 命令格式: 80 E2 91 00 Lc [BF 34 04 82 02 05 E0]
+        注意：无 Le 字段
         """
-        # ES10 命令格式: 80 E2 91 00 Lc [BF 34 04 82 02 05 E0] Le
         cla = 0x80
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
         data = "BF3404820205E0"
         lc = len(data) // 2
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
     def fetch(length: int) -> str:
@@ -252,8 +268,11 @@ class ApduBuilder:
     @staticmethod
     def list_notification() -> str:
         """ListNotification (BF28)
-        
+
         列出待处理的通知
+        
+        ES10 命令格式: 80 E2 91 00 Lc [BF 28 00]
+        注意：无 Le 字段
         """
         cla = 0x80
         ins = 0xE2
@@ -261,8 +280,7 @@ class ApduBuilder:
         p2 = 0x00
         data = "BF2800"
         lc = len(data) // 2
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
     def remove_notification(sequence: str) -> str:

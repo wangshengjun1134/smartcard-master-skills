@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# uv
+uv.lock
+
+# 会话文件
+skills/**/.sessions/
+**/.sessions/
+
+# IDE
+.vscode/
+.idea/
+
+# 日志文件
+logs/
+*.log
+
+# 临时文件
+test_stderr.txt

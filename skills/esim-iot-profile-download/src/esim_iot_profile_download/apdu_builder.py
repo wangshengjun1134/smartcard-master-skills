@@ -218,6 +218,70 @@ class ApduBuilder:
         le = 0x00
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
     
+    # ========== 清理相关 APDU ==========
+    
+    @staticmethod
+    def euicc_memory_reset() -> str:
+        """EuiccMemoryReset (BF34)
+        
+        重置 eUICC 内存，清除之前的下载状态
+        """
+        # ES10 命令格式: 80 E2 91 00 Lc [BF 34 04 82 02 05 E0] Le
+        cla = 0x80
+        ins = 0xE2
+        p1 = 0x91
+        p2 = 0x00
+        data = "BF3404820205E0"
+        lc = len(data) // 2
+        le = 0x00
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+    
+    @staticmethod
+    def fetch(length: int) -> str:
+        """FETCH (91XX 响应)
+        
+        处理 eUICC 异步响应
+        """
+        cla = 0x80
+        ins = 0x12
+        p1 = 0x00
+        p2 = 0x00
+        le = length
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
+    
+    @staticmethod
+    def list_notification() -> str:
+        """ListNotification (BF28)
+        
+        列出待处理的通知
+        """
+        cla = 0x80
+        ins = 0xE2
+        p1 = 0x91
+        p2 = 0x00
+        data = "BF2800"
+        lc = len(data) // 2
+        le = 0x00
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+    
+    @staticmethod
+    def remove_notification(sequence: str) -> str:
+        """RemoveNotification (BF30)
+        
+        删除指定序号的通知
+        
+        Args:
+            sequence: 通知序号（十六进制字符串）
+        """
+        cla = 0x80
+        ins = 0xE2
+        p1 = 0x91
+        p2 = 0x00
+        data = f"BF30048002{sequence}"
+        lc = len(data) // 2
+        le = 0x00
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+    
     @staticmethod
     def add_initial_eim(eim_data: str) -> str:
         """AddInitialEim (BF57)

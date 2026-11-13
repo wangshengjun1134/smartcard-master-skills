@@ -105,6 +105,38 @@ def test_apdu_builder_get_profiles_info():
     assert apdu == "80BF2D0000"
 
 
+def test_apdu_builder_euicc_memory_reset():
+    """测试 EuiccMemoryReset APDU"""
+    apdu = ApduBuilder.euicc_memory_reset()
+    # 80 E2 91 00 07 BF3404820205E0 00
+    assert apdu.startswith("80E29100")
+    assert "BF34" in apdu
+
+
+def test_apdu_builder_list_notification():
+    """测试 ListNotification APDU"""
+    apdu = ApduBuilder.list_notification()
+    # 80 E2 91 00 03 BF2800 00
+    assert apdu.startswith("80E29100")
+    assert "BF28" in apdu
+
+
+def test_apdu_builder_remove_notification():
+    """测试 RemoveNotification APDU"""
+    apdu = ApduBuilder.remove_notification("0001")
+    # 80 E2 91 00 07 BF300480020001 00
+    assert apdu.startswith("80E29100")
+    assert "BF30" in apdu
+    assert "0001" in apdu
+
+
+def test_apdu_builder_fetch():
+    """测试 FETCH APDU"""
+    apdu = ApduBuilder.fetch(16)
+    # 80 12 00 00 10
+    assert apdu == "8012000010"
+
+
 def test_response_parser_sw_9000():
     """测试 SW 9000 解析"""
     result = ResponseParser.parse_sw("9000")

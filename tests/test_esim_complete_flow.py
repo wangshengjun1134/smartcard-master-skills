@@ -206,7 +206,7 @@ def test_complete_flow_direct_mode(test_env):
     assert session.data["state"] == EsimState.WAIT_SELECT_ISDR
     assert session.data["channel"] == 1
     
-    # 10. SELECT ISD-R 完成 -> GET EUICC INFO
+    # 10. SELECT ISD-R 完成 -> EUICC MEMORY RESET (清理阶段)
     isdr_result = ActionResult(
         action_id="esim.select-isdr",
         type="APDU_RESULT",
@@ -215,9 +215,32 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, isdr_result, session)
     store.save(session, "esim.iot-profile-download")
-    assert session.data["state"] == EsimState.WAIT_GET_EUICC_INFO
+    assert session.data["state"] == EsimState.WAIT_EUICC_MEMORY_RESET
     
-    # 11. GET EUICC INFO 完成 -> GET EUICC CHALLENGE
+    # 11. EUICC MEMORY RESET 完成 -> LIST NOTIFICATION
+    reset_result = ActionResult(
+        action_id="esim.euicc-memory-reset",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data={"response": "", "sw": "9000"}
+    )
+    result = skill.handle_action_result(ctx, reset_result, session)
+    store.save(session, "esim.iot-profile-download")
+    assert session.data["state"] == EsimState.WAIT_LIST_NOTIFICATION
+    
+    # 12. LIST NOTIFICATION 完成 -> REMOVE NOTIFICATION
+    list_result = ActionResult(
+        action_id="esim.list-notification",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data={"response": "", "sw": "9000"}  # 无通知
+    )
+    result = skill.handle_action_result(ctx, list_result, session)
+    store.save(session, "esim.iot-profile-download")
+    # 无通知时直接跳到 GET EUICC INFO
+    assert session.data["state"] == EsimState.WAIT_GET_EUICC_INFO
+
+    # 13. GET EUICC INFO 完成 -> GET EUICC CHALLENGE
     euicc_info_result = ActionResult(
         action_id="esim.get-euicc-info",
         type="APDU_RESULT",

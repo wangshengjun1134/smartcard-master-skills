@@ -256,8 +256,8 @@ def test_stdin_stdout_direct_mode():
             
             assert mc_response["result"]["status"] == "CONTINUE"
             assert "ISD-R" in mc_response["result"]["nextAction"]["name"]
-            
-            # 9. handleActionResult (SELECT ISD-R) -> GET EUICC INFO
+
+            # 9. handleActionResult (SELECT ISD-R) -> EUICC MEMORY RESET (清理阶段)
             isdr_response = send_request(proc, {
                 "jsonrpc": "2.0",
                 "id": "req-9",
@@ -274,14 +274,56 @@ def test_stdin_stdout_direct_mode():
                     }
                 }
             })
-            
+
             assert isdr_response["result"]["status"] == "CONTINUE"
-            assert "eUICC" in isdr_response["result"]["nextAction"]["name"]
-            
-            # 10. handleActionResult (GET EUICC INFO) -> GET EUICC CHALLENGE
-            euicc_info_response = send_request(proc, {
+            assert "内存" in isdr_response["result"]["nextAction"]["name"] or "reset" in isdr_response["result"]["nextAction"]["name"].lower()
+
+            # 10. handleActionResult (EUICC MEMORY RESET) -> LIST NOTIFICATION
+            reset_response = send_request(proc, {
                 "jsonrpc": "2.0",
                 "id": "req-10",
+                "method": "skill.handleActionResult",
+                "params": {
+                    "sessionId": session_id,
+                    "actionId": "esim.euicc-memory-reset",
+                    "result": {
+                        "actionId": "esim.euicc-memory-reset",
+                        "type": "APDU_RESULT",
+                        "status": "OK",
+                        "data": {"response": "", "sw": "9000"},
+                        "elapsedMs": 50
+                    }
+                }
+            })
+
+            assert reset_response["result"]["status"] == "CONTINUE"
+            assert "通知" in reset_response["result"]["nextAction"]["name"] or "notification" in reset_response["result"]["nextAction"]["name"].lower()
+
+            # 11. handleActionResult (LIST NOTIFICATION) -> GET EUICC INFO (无通知时)
+            list_response = send_request(proc, {
+                "jsonrpc": "2.0",
+                "id": "req-11",
+                "method": "skill.handleActionResult",
+                "params": {
+                    "sessionId": session_id,
+                    "actionId": "esim.list-notification",
+                    "result": {
+                        "actionId": "esim.list-notification",
+                        "type": "APDU_RESULT",
+                        "status": "OK",
+                        "data": {"response": "", "sw": "9000"},
+                        "elapsedMs": 20
+                    }
+                }
+            })
+
+            assert list_response["result"]["status"] == "CONTINUE"
+            assert "eUICC" in list_response["result"]["nextAction"]["name"]
+
+            # 12. handleActionResult (GET EUICC INFO) -> GET EUICC CHALLENGE
+            euicc_info_response = send_request(proc, {
+                "jsonrpc": "2.0",
+                "id": "req-12",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -299,10 +341,10 @@ def test_stdin_stdout_direct_mode():
             assert euicc_info_response["result"]["status"] == "CONTINUE"
             assert "挑战" in euicc_info_response["result"]["nextAction"]["name"]
             
-            # 11. handleActionResult (GET EUICC CHALLENGE) -> AUTHENTICATE SERVER
+            # 13. handleActionResult (GET EUICC CHALLENGE) -> AUTHENTICATE SERVER
             challenge_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-11",
+                "id": "req-13",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -320,10 +362,10 @@ def test_stdin_stdout_direct_mode():
             assert challenge_response["result"]["status"] == "CONTINUE"
             assert "认证" in challenge_response["result"]["nextAction"]["name"]
             
-            # 12. handleActionResult (AUTHENTICATE SERVER) -> PREPARE DOWNLOAD
+            # 14. handleActionResult (AUTHENTICATE SERVER) -> PREPARE DOWNLOAD
             auth_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-12",
+                "id": "req-14",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -341,10 +383,10 @@ def test_stdin_stdout_direct_mode():
             assert auth_response["result"]["status"] == "CONTINUE"
             assert "下载" in auth_response["result"]["nextAction"]["name"]
             
-            # 13. handleActionResult (PREPARE DOWNLOAD) -> LOAD PROFILE PACKAGE
+            # 15. handleActionResult (PREPARE DOWNLOAD) -> LOAD PROFILE PACKAGE
             pd_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-13",
+                "id": "req-15",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -362,10 +404,10 @@ def test_stdin_stdout_direct_mode():
             assert pd_response["result"]["status"] == "CONTINUE"
             assert "Profile" in pd_response["result"]["nextAction"]["name"]
             
-            # 14. handleActionResult (LOAD PROFILE PACKAGE) -> POST INSTALL RESET
+            # 16. handleActionResult (LOAD PROFILE PACKAGE) -> POST INSTALL RESET
             lpp_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-14",
+                "id": "req-16",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -383,10 +425,10 @@ def test_stdin_stdout_direct_mode():
             assert lpp_response["result"]["status"] == "CONTINUE"
             assert lpp_response["result"]["nextAction"]["type"] == "RESET_CARD"
             
-            # 15. handleActionResult (POST INSTALL RESET) -> IC1
+            # 17. handleActionResult (POST INSTALL RESET) -> IC1
             post_reset_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-15",
+                "id": "req-17",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -404,10 +446,10 @@ def test_stdin_stdout_direct_mode():
             assert post_reset_response["result"]["status"] == "CONTINUE"
             assert "通道 1" in post_reset_response["result"]["nextAction"]["name"]
             
-            # 16. handleActionResult (IC1) -> IC2
+            # 18. handleActionResult (IC1) -> IC2
             ic1_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-16",
+                "id": "req-18",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -425,10 +467,10 @@ def test_stdin_stdout_direct_mode():
             assert ic1_response["result"]["status"] == "CONTINUE"
             assert "通道 2" in ic1_response["result"]["nextAction"]["name"]
             
-            # 17. handleActionResult (IC2) -> SELECT ISD-R
+            # 19. handleActionResult (IC2) -> SELECT ISD-R
             ic2_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-17",
+                "id": "req-19",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -445,10 +487,10 @@ def test_stdin_stdout_direct_mode():
             
             assert ic2_response["result"]["status"] == "CONTINUE"
             
-            # 18. handleActionResult (SELECT ISD-R) -> GET PROFILES INFO
+            # 20. handleActionResult (SELECT ISD-R) -> GET PROFILES INFO
             isdr2_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-18",
+                "id": "req-20",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -466,10 +508,10 @@ def test_stdin_stdout_direct_mode():
             assert isdr2_response["result"]["status"] == "CONTINUE"
             assert "Profile" in isdr2_response["result"]["nextAction"]["name"]
             
-            # 19. handleActionResult (GET PROFILES INFO) -> SUCCESS (直接模式)
+            # 21. handleActionResult (GET PROFILES INFO) -> SUCCESS (直接模式)
             profiles_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-19",
+                "id": "req-21",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,

@@ -35,7 +35,16 @@ description: >
 5. **STATUS + MANAGE_CHANNEL** - 获取状态并管理通道
 6. **SELECT ISD-R** - 选择 ISD-R（Issuer Security Domain）
 
-### 阶段 2：Profile 安装
+### 阶段 2：下载前清理
+
+> **重要**：在下载前必须清理 eUICC，否则之前失败的下载可能导致后续操作失败。
+
+1. **EuiccMemoryReset (BF34)** - 重置 eUICC 内存，清除之前的下载状态
+2. **FETCH REFRESH** - 处理 91XX 异步响应（如果需要）
+3. **ListNotification (BF28)** - 列出待处理的通知
+4. **RemoveNotification (BF30)** - 删除所有待处理的通知
+
+### 阶段 3：Profile 安装
 
 1. **GetEuiccInfo1 (BF20)** - 获取 eUICC 信息
 2. **GetEuiccChallenge (BF2E)** - 获取 eUICC 挑战值
@@ -43,7 +52,7 @@ description: >
 4. **PrepareDownload (BF21)** - 准备下载
 5. **LoadProfilePackage (BF36)** - 加载 Profile 包
 
-### 阶段 3：后安装处理
+### 阶段 4：后安装处理
 
 1. **COLDRESET** - 冷复位
 2. **IC1/IC2** - 初始化通道
@@ -51,7 +60,7 @@ description: >
 4. **GetProfilesInfo (BF2D)** - 获取 Profile 信息
 5. **校验 profileState** - 验证 Profile 状态
 
-### 阶段 4：eIM 启用（间接模式）
+### 阶段 5：eIM 启用（间接模式）
 
 1. **AddInitialEim (BF57)** - 添加初始 eIM
 2. **LoadEuiccPackage Enable PSMO (BF51)** - 启用 PSMO
@@ -94,6 +103,10 @@ description: >
 
 | 指令 | CLA INS P1 P2 | 说明 |
 |------|---------------|------|
+| EuiccMemoryReset | 80 E2 91 00 | 重置 eUICC 内存（清理） |
+| ListNotification | 80 E2 91 00 | 列出待处理通知（清理） |
+| RemoveNotification | 80 E2 91 00 | 删除通知（清理） |
+| FETCH | 80 12 00 00 | 处理 91XX 异步响应 |
 | GetEuiccInfo1 | 80 BF 20 00 | 获取 eUICC 信息 |
 | GetEuiccChallenge | 80 BF 2E 00 | 获取挑战值 |
 | AuthenticateServer | 80 BF 38 00 | 服务器认证 |

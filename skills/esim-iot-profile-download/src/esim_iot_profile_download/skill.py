@@ -156,6 +156,26 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_select_isdr(ctx, session)
         
         elif current_state == EsimState.WAIT_SELECT_ISDR:
+            # SELECT ISD-R 完成后，进入清理阶段
+            return self._do_euicc_memory_reset(ctx, session)
+        
+        elif current_state == EsimState.WAIT_EUICC_MEMORY_RESET:
+            # EuiccMemoryReset 完成后，处理可能的 91XX 响应
+            sw = result.data.get("sw", "")
+            if sw.startswith("91"):
+                return self._do_fetch_refresh(ctx, session, int(sw[2:], 16))
+            return self._do_list_notification(ctx, session)
+        
+        elif current_state == EsimState.WAIT_FETCH_REFRESH:
+            # FETCH REFRESH 完成后，进入 ListNotification
+            return self._do_list_notification(ctx, session)
+        
+        elif current_state == EsimState.WAIT_LIST_NOTIFICATION:
+            # ListNotification 完成后，进入 RemoveNotification
+            return self._do_remove_notification(ctx, session, result)
+        
+        elif current_state == EsimState.WAIT_REMOVE_NOTIFICATION:
+            # RemoveNotification 完成后，进入 Profile 安装阶段
             return self._do_get_euicc_info(ctx, session)
         
         elif current_state == EsimState.WAIT_GET_EUICC_INFO:
@@ -321,11 +341,68 @@ class EsimIotProfileDownloadSkill(Skill):
         """SELECT ISD-R"""
         ctx.output.text("步骤 7: 选择 ISD-R")
         session.data["state"] = EsimState.WAIT_SELECT_ISDR
-        
+
         apdu = ApduBuilder.select_isdr()
         action = self._build_apdu_action("esim.select-isdr", "选择 ISD-R", apdu)
         return SkillResult.continue_with(session.session_id, action)
-    
+
+    # ========== 清理阶段（下载前清理）==========
+
+    def _do_euicc_memory_reset(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """EuiccMemoryReset - 重置 eUICC 内存，清除之前的下载状态"""
+        ctx.output.text("步骤 7.1: 清理 - 重置 eUICC 内存")
+        session.data["state"] = EsimState.WAIT_EUICC_MEMORY_RESET
+
+        apdu = ApduBuilder.euicc_memory_reset()
+        action = self._build_apdu_action("esim.euicc-memory-reset", "重置 eUICC 内存", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
+    def _do_fetch_refresh(self, ctx: SkillContext, session: SkillSession, length: int) -> SkillResult:
+        """FETCH - 处理 91XX 异步响应"""
+        ctx.output.text(f"步骤 7.2: 清理 - FETCH REFRESH (length={length})")
+        session.data["state"] = EsimState.WAIT_FETCH_REFRESH
+
+        apdu = ApduBuilder.fetch(length)
+        action = self._build_apdu_action("esim.fetch-refresh", "FETCH REFRESH", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
+    def _do_list_notification(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """ListNotification - 列出待处理的通知"""
+        ctx.output.text("步骤 7.3: 清理 - 列出通知")
+        session.data["state"] = EsimState.WAIT_LIST_NOTIFICATION
+
+        apdu = ApduBuilder.list_notification()
+        action = self._build_apdu_action("esim.list-notification", "列出通知", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
+    def _do_remove_notification(self, ctx: SkillContext, session: SkillSession, result: ActionResult) -> SkillResult:
+        """RemoveNotification - 删除通知"""
+        ctx.output.text("步骤 7.4: 清理 - 删除通知")
+        session.data["state"] = EsimState.WAIT_REMOVE_NOTIFICATION
+
+        # 解析 ListNotification 响应，获取通知序号
+        response = result.data.get("response", "")
+        
+        # 如果没有通知，直接跳过
+        if not response or response == "":
+            ctx.output.text("无待处理通知")
+            return self._do_get_euicc_info(ctx, session)
+        
+        # 解析通知序号（简化处理，实际应解析 ASN.1）
+        # 假设响应格式为 BF28048002XXXX，其中 XXXX 是序号
+        sequence = "0001"  # 默认序号
+        
+        # 尝试从响应中提取序号
+        if len(response) >= 8:
+            # 查找 8002 标签后的序号
+            idx = response.find("8002")
+            if idx >= 0 and idx + 8 <= len(response):
+                sequence = response[idx + 4:idx + 8]
+        
+        apdu = ApduBuilder.remove_notification(sequence)
+        action = self._build_apdu_action("esim.remove-notification", "删除通知", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
     # ========== Profile 安装阶段 ==========
     
     def _do_get_euicc_info(self, ctx: SkillContext, session: SkillSession) -> SkillResult:

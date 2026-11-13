@@ -7,6 +7,7 @@ dependencies = [
     "pytest>=8.0",
     "read-iccid-skill",
     "esim-iot-profile-download-skill",
+    "card-reader",
 ]
 
 [tool.uv.workspace]
@@ -16,6 +17,7 @@ members = ["packages/*", "skills/*"]
 smartcard-skill-sdk = { workspace = true }
 read-iccid-skill = { workspace = true }
 esim-iot-profile-download-skill = { workspace = true }
+card-reader = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,525 @@
+{
+  "timestamp": "2026-11-11T09:10:51.458Z",
+  "request": {
+    "model": "qwen3.5-plus",
+    "messages": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "Follow the user-visible output language preference below for this side query.\n\nThis preference overrides any earlier language-selection rule in this system instruction.\n\n# Output language preference: auto\n<!-- qwen-code:llm-output-language: auto -->\n\n## Rule\nRespond in the same language as the user's input.\n\n## Exception\nIf the user **explicitly** requests a response in a specific language (e.g., \"please reply in English\"), switch to the user's requested language for the remainder of the conversation.\n\n## Mixed-language input\nIf the user mixes languages, use the language that best matches the user's main request.\n\n## Keep technical artifacts unchanged\nDo **not** translate or rewrite:\n- Code blocks, CLI commands, file paths, stack traces, logs, JSON keys, identifiers\n- Exact quoted text from the user (keep quotes verbatim)\n\n## Tool / system outputs\nRaw tool/system outputs may contain fixed-format English. Preserve them verbatim, and if needed, add a short explanation in the user's language below.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_4d0bcea4e2dd4aada4d7d753",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"git status\",\"description\":\"检查 git 状态\"}"
+            }
+          }
+        ],
+        "reasoning_content": "文档已成功创建。现在我需要将其提交到 git。让我先检查 git 状态，然后添加并提交。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_4d0bcea4e2dd4aada4d7d753",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: git status\nDirectory: (root)\nOutput: On branch master\n\nNo commits yet\n\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n        docs/\n        logs/\n\nnothing added to commit but untracked files present (use \"git add\" to track)\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 23772"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_e6867dc415c1492d8d749a67",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"git add docs/skill-design.md && git commit -m \\\"docs: 添加 SmartCard Agent Skills 设计文档 v2.0\\n\\n- 定义多 Skill 集合的项目组织方式\\n- 基于 uv Workspaces 的模块依赖管理\\n- Skill 与 Agent Runtime 的 stdin/stdout NDJSON 协议\\n- 多交互 Skill 的会话与本地状态管理\\n- APDU 类 Skill 与读卡器接口约定\\n- Agent LLM 首次参数收集与执行期免 LLM 模型\\n- 特殊指令直执行模式\\n- 安全、脱敏、错误处理、测试与开发检查清单\\\"\",\"description\":\"添加并提交设计文档\"}"
+            }
+          }
+        ],
+        "reasoning_content": "这是一个全新的 git 仓库，还没有任何提交。我需要先将 docs/skill-design.md 添加到暂存区，然后提交。让我也检查一下是否有 .gitignore 文件需要创建，以确保 .sessions 目录不会被跟踪。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_e6867dc415c1492d8d749a67",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: git add docs/skill-design.md && git commit -m \"docs: 添加 SmartCard Agent Skills 设计文档 v2.0\n\n- 定义多 Skill 集合的项目组织方式\n- 基于 uv Workspaces 的模块依赖管理\n- Skill 与 Agent Runtime 的 stdin/stdout NDJSON 协议\n- 多交互 Skill 的会话与本地状态管理\n- APDU 类 Skill 与读卡器接口约定\n- Agent LLM 首次参数收集与执行期免 LLM 模型\n- 特殊指令直执行模式\n- 安全、脱敏、错误处理、测试与开发检查清单\"\nDirectory: (root)\nOutput: warning: in the working copy of 'docs/skill-design.md', LF will be replaced by CRLF the next time Git touches it\n[master (root-commit) 1aaff68] docs: 添加 SmartCard Agent Skills 设计文档 v2.0\n 1 file changed, 1113 insertions(+)\n create mode 100644 docs/skill-design.md\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 5140"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_71f867b1c08d40f09dd752dd",
+            "type": "function",
+            "function": {
+              "name": "todo_write",
+              "arguments": "{\"todos\":[{\"content\":\"创建设计文档 markdown 文件\",\"id\":\"1\",\"status\":\"completed\"},{\"content\":\"将文档内容写入 docs/skill-design.md\",\"id\":\"2\",\"status\":\"completed\"},{\"content\":\"提交到 git\",\"id\":\"3\",\"status\":\"completed\"}]}"
+            }
+          }
+        ],
+        "reasoning_content": "提交成功。现在让我更新 todo 列表，标记所有任务为已完成。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_71f867b1c08d40f09dd752dd",
+        "content": [
+          {
+            "type": "text",
+            "text": "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable\n\n<system-reminder>\nYour todo list has changed. DO NOT mention this explicitly to the user. Here are the latest contents of your todo list:\n\n[{\"content\":\"创建设计文档 markdown 文件\",\"id\":\"1\",\"status\":\"completed\"},{\"content\":\"将文档内容写入 docs/skill-design.md\",\"id\":\"2\",\"status\":\"completed\"},{\"content\":\"提交到 git\",\"id\":\"3\",\"status\":\"completed\"}]. Continue on with the tasks at hand if applicable.\n</system-reminder>"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "已完成：\n\n1. 创建设计文档 `docs/skill-design.md`（1113 行）\n2. 已提交到 git（commit: `1aaff68`）\n\n文档涵盖了 v2.0 设计的全部内容，包括项目结构、协议规范、会话管理、安全脱敏、测试检查清单等 20 个章节。",
+        "reasoning_content": "所有任务已完成。让我给用户一个简洁的总结。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "1"
+          },
+          {
+            "type": "text",
+            "text": "安装一下 Superpowers skills"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_c7badc4911bb48418952cef7",
+            "type": "function",
+            "function": {
+              "name": "skill",
+              "arguments": "{\"args\":\"如何安装 Superpowers skills 扩展\",\"skill\":\"qc-helper\"}"
+            }
+          }
+        ],
+        "reasoning_content": "用户要求安装 \"Superpowers skills\"。这听起来像是一个 Qwen Code 的扩展或技能包。让我先搜索一下这是什么，以及如何安装。\n\n根据上下文，用户可能指的是 Qwen Code 的某个扩展或技能集合。让我使用 qc-helper skill 来帮助用户了解如何安装 Superpowers skills。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_c7badc4911bb48418952cef7",
+        "content": [
+          {
+            "type": "text",
+            "text": "Base directory for this skill: C:\\Users\\DELL\\AppData\\Roaming\\npm\\node_modules\\@qwen-code\\qwen-code\\bundled\\qc-helper\nImportant: ALWAYS resolve absolute paths from this base directory when working with skills.\n\n# Qwen Code Helper\n\nYou are a helpful assistant for **Qwen Code** — an AI coding agent for the terminal. Your job is to answer user questions about Qwen Code's usage, features, configuration, and troubleshooting by referencing the official documentation, and to help users modify their configuration when requested.\n\n## How to Find Documentation\n\nThe official user documentation is available in the `docs/` subdirectory **relative to this skill's directory**. Use the `read_file` tool to load the relevant document on demand by concatenating this skill's base directory path with the relative doc path listed below.\n\n> **Example**: If the user asks about MCP servers, read `docs/features/mcp.md` (relative to this skill's directory).\n\n---\n\n## Documentation Index\n\nUse this index to locate the right document for the user's question. Load only the docs that are relevant — do not read everything at once.\n\n### Getting Started\n\n| Topic             | Doc Path                  |\n| ----------------- | ------------------------- |\n| Product overview  | `docs/overview.md`        |\n| Quick start guide | `docs/quickstart.md`      |\n| Common workflows  | `docs/common-workflow.md` |\n\n### Configuration\n\n| Topic                                     | Doc Path                                |\n| ----------------------------------------- | --------------------------------------- |\n| Settings reference (all config keys)      | `docs/configuration/settings.md`        |\n| Authentication setup                      | `docs/configuration/auth.md`            |\n| Model providers (OpenAI-compatible, etc.) | `docs/configuration/model-providers.md` |\n| .qwenignore file                          | `docs/configuration/qwen-ignore.md`     |\n| Themes                                    | `docs/configuration/themes.md`          |\n| Trusted folders                           | `docs/configuration/trusted-folders.md` |\n\n### Features\n\n| Topic                                       | Doc Path                                |\n| ------------------------------------------- | --------------------------------------- |\n| Approval mode (plan/default/auto_edit/yolo) | `docs/features/approval-mode.md`        |\n| Auto mode (AI-driven approval)              | `docs/features/auto-mode.md`            |\n| Hooks (lifecycle hooks)                     | `docs/features/hooks.md`                |\n| MCP (Model Context Protocol)                | `docs/features/mcp.md`                  |\n| Memory                                      | `docs/features/memory.md`               |\n| Skills system                               | `docs/features/skills.md`               |\n| Sub-agents                                  | `docs/features/sub-agents.md`           |\n| Sandbox / security                          | `docs/features/sandbox.md`              |\n| Slash commands                              | `docs/features/commands.md`             |\n| Headless / non-interactive mode             | `docs/features/headless.md`             |\n| LSP integration                             | `docs/features/lsp.md`                  |\n| Computer Use (desktop automation)           | `docs/features/computer-use.md`         |\n| Token caching                               | `docs/features/token-caching.md`        |\n| Language / i18n                             | `docs/features/language.md`             |\n| Arena mode                                  | `docs/features/arena.md`                |\n| Status line                                 | `docs/features/status-line.md`          |\n| Scheduled tasks (cron/loop)                 | `docs/features/scheduled-tasks.md`      |\n| Worktree                                    | `docs/features/worktree.md`             |\n| Code review (`/review`)                     | `docs/features/code-review.md`          |\n| Structured output (JSON schema)             | `docs/features/structured-output.md`    |\n| Dual output                                 | `docs/features/dual-output.md`          |\n| Tool-use summaries                          | `docs/features/tool-use-summaries.md`   |\n| Followup suggestions                        | `docs/features/followup-suggestions.md` |\n| Markdown rendering                          | `docs/features/markdown-rendering.md`   |\n| Contextual tips                             | `docs/features/tips.md`                 |\n| Channels (Telegram/WeChat/DingTalk/etc.)    | `docs/features/channels/overview.md`    |\n\n### Daemon Mode\n\n| Topic                             | Doc Path                          |\n| --------------------------------- | --------------------------------- |\n| qwen serve (daemon mode overview) | `docs/qwen-serve.md`              |\n| Local launch templates            | `docs/qwen-serve-deploy-local.md` |\n\n### IDE Integration\n\n| Topic                   | Doc Path                                     |\n| ----------------------- | -------------------------------------------- |\n| VS Code integration     | `docs/integration-vscode.md`                 |\n| Zed IDE integration     | `docs/integration-zed.md`                    |\n| JetBrains integration   | `docs/integration-jetbrains.md`              |\n| GitHub Actions          | `docs/integration-github-action.md`          |\n| IDE companion spec      | `docs/ide-integration/ide-companion-spec.md` |\n| IDE integration details | `docs/ide-integration/ide-integration.md`    |\n\n### Extensions\n\n| Topic                           | Doc Path                                       |\n| ------------------------------- | ---------------------------------------------- |\n| Extension introduction          | `docs/extension/introduction.md`               |\n| Getting started with extensions | `docs/extension/getting-started-extensions.md` |\n| Releasing extensions            | `docs/extension/extension-releasing.md`        |\n\n### Reference & Support\n\n| Topic                      | Doc Path                               |\n| -------------------------- | -------------------------------------- |\n| Keyboard shortcuts         | `docs/reference/keyboard-shortcuts.md` |\n| Troubleshooting            | `docs/support/troubleshooting.md`      |\n| Uninstall guide            | `docs/support/Uninstall.md`            |\n| Terms of service & privacy | `docs/support/tos-privacy.md`          |\n\n---\n\n## Configuration Quick Reference\n\nWhen the user asks about configuration, the primary reference is `docs/configuration/settings.md`. Here is a quick orientation:\n\n### Config File Locations & Priority\n\n| Level   | Path                                                                                                                                                       | Description                            |\n| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |\n| User    | `~/.qwen/settings.json`                                                                                                                                    | Personal global config                 |\n| Project | `<project>/.qwen/settings.json`                                                                                                                            | Project-specific, overrides user level |\n| System  | Linux: `/etc/qwen-code/settings.json`<br>Windows: `C:\\ProgramData\\qwen-code\\settings.json`<br>macOS: `/Library/Application Support/QwenCode/settings.json` | Admin-level config                     |\n\n**Priority** (highest to lowest): CLI args > env vars > system settings > project settings > user settings > defaults\n\n**Format**: JSON with Comments (supports `//` and `/* */`), with environment variable interpolation (`$VAR` or `${VAR}`)\n\n### Common Config Categories\n\n| Category      | Key Config Keys                                                      | Reference                                                                                        |\n| ------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |\n| Permissions   | `permissions.allow/ask/deny`                                         | `docs/configuration/settings.md`, `docs/features/approval-mode.md`                               |\n| MCP Servers   | `mcpServers.*`, `mcp.*`                                              | `docs/configuration/settings.md`, `docs/features/mcp.md`                                         |\n| Tool Approval | `tools.approvalMode`                                                 | `docs/configuration/settings.md`, `docs/features/approval-mode.md`, `docs/features/auto-mode.md` |\n| Hooks         | `hooks.*`                                                            | `docs/configuration/settings.md`, `docs/features/hooks.md`                                       |\n| Model         | `model.name`, `modelProviders`                                       | `docs/configuration/settings.md`, `docs/configuration/model-providers.md`                        |\n| General/UI    | `general.*`, `ui.*`, `ide.*`, `output.*`                             | `docs/configuration/settings.md`                                                                 |\n| Context       | `context.*`                                                          | `docs/configuration/settings.md`                                                                 |\n| Advanced      | `env`, `webSearch`, `security`, `privacy`, `telemetry`, `advanced.*` | `docs/configuration/settings.md`                                                                 |\n\n---\n\n## Workflow\n\n### Answering Questions\n\n1. **Identify the topic** from the user's question using the Documentation Index above\n2. **Use `read_file`** to load the relevant doc(s) — only load what you need\n3. **Provide a clear, concise answer** grounded in the documentation content\n4. If the docs don't cover the question, say so honestly and suggest where to look\n\n### Helping with Configuration Changes\n\nWhen the user wants to modify their configuration:\n\n1. **Read the relevant doc** to understand the config key, its type, allowed values, and defaults\n2. **Ask which config level** to modify if not specified: user (`~/.qwen/settings.json`) or project (`.qwen/settings.json`)\n3. **Use `read_file`** to check the current content of the target settings file\n4. **Use `edit_file`** to apply the change with correct JSON syntax\n5. **After every configuration change**, you MUST remind the user:\n\n> **Note: Most configuration changes require restarting Qwen Code (`/exit` then re-launch) to take effect.** Only a few settings (like `permissions`) are picked up dynamically.\n\n### Important Notes\n\n- Always ground your answers in the actual documentation content — do not guess or fabricate config keys\n- When showing config examples, use JSONC format with comments for clarity\n- If a question spans multiple topics (e.g., \"How do I set up MCP with sandbox?\"), read both relevant docs\n- For migration questions from other tools (Claude Code, Gemini CLI, etc.), check `docs/configuration/settings.md` for equivalent config keys\n"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_6f1e37991bd44162b7f5c3db",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"file_path\":\"C:\\\\Users\\\\DELL\\\\AppData\\\\Roaming\\\\npm\\\\node_modules\\\\@qwen-code\\\\qwen-code\\\\bundled\\\\qc-helper\\\\docs\\\\features\\\\skills.md\"}"
+            }
+          }
+        ],
+        "reasoning_content": "qc-helper skill 给了我文档索引，但没有直接提到 \"Superpowers skills\"。让我搜索一下文档中是否有关于 Superpowers 的信息，或者这可能是一个第三方扩展。让我先查看 skills 相关的文档。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_6f1e37991bd44162b7f5c3db",
+        "content": [
+          {
+            "type": "text",
+            "text": "# Agent Skills\n\n> Create, manage, and share Skills to extend Qwen Code's capabilities.\n\nThis guide shows you how to create, use, and manage Agent Skills in **Qwen Code**. Skills are modular capabilities that extend the model's effectiveness through organized folders containing instructions (and optionally scripts/resources).\n\n## Prerequisites\n\n- Qwen Code (recent version)\n- Basic familiarity with Qwen Code ([Quickstart](../quickstart.md))\n\n## What are Agent Skills?\n\nAgent Skills package expertise into discoverable capabilities. Each Skill consists of a `SKILL.md` file with instructions that the model can load when relevant, plus optional supporting files like scripts and templates.\n\n### How Skills are invoked\n\nSkills are **model-invoked** — the model autonomously decides when to use them based on your request and the Skill's description. This is different from slash commands, which are **user-invoked** (you explicitly type `/command`).\n\nIf you want to invoke a Skill explicitly, type it as a slash command using the Skill's name:\n\n```bash\n/<skill-name>\n```\n\nStart typing `/` to autocomplete and browse available Skills alongside their descriptions. The `/skills` command opens the Skills panel, where you can browse, search, toggle, and launch Skills interactively.\n\n> **Note:** If you previously ran a Skill with `/skills <skill-name>`, that syntax now just opens the Skills panel and ignores the trailing argument. Use `/<skill-name>` to run a Skill directly.\n\n### Benefits\n\n- Extend Qwen Code for your workflows\n- Share expertise across your team via git\n- Reduce repetitive prompting\n- Compose multiple Skills for complex tasks\n\n## Create a Skill\n\nSkills are stored as directories containing a `SKILL.md` file.\n\n### Personal Skills\n\nPersonal Skills are available across all your projects. Store them in `~/.qwen/skills/`:\n\n```bash\nmkdir -p ~/.qwen/skills/my-skill-name\n```\n\nUse personal Skills for:\n\n- Your individual workflows and preferences\n- Skills you're developing\n- Personal productivity helpers\n\n### Project Skills\n\nProject Skills are shared with your team. Store them in `.qwen/skills/` within your project:\n\n```bash\nmkdir -p .qwen/skills/my-skill-name\n```\n\nUse project Skills for:\n\n- Team workflows and conventions\n- Project-specific expertise\n- Shared utilities and scripts\n\nProject Skills can be checked into git and automatically become available to teammates.\n\n## Write `SKILL.md`\n\nCreate a `SKILL.md` file with YAML frontmatter and Markdown content:\n\n```yaml\n---\nname: your-skill-name\ndescription: Brief description of what this Skill does and when to use it\npriority: 10\n---\n\n# Your Skill Name\n\n## Instructions\nProvide clear, step-by-step guidance for Qwen Code.\n\n## Examples\nShow concrete examples of using this Skill.\n```\n\n### Field requirements\n\nQwen Code currently validates that:\n\n- `name` is a non-empty string matching `/^[\\p{L}\\p{N}_:.-]+$/u` — Unicode letters and digits (CJK / Cyrillic / accented Latin all OK), plus `_`, `:`, `.`, `-`. Whitespace, slashes, brackets and other structurally unsafe characters are rejected at parse time.\n- `description` is a non-empty string\n- `priority` is optional. When present, it must be a finite number. Higher values sort earlier in the `/skills` listing only — slash-command completion (typing `/`) and the `/help` custom commands view stay alphabetical, so a high-priority Skill never reorders built-in commands. Omitted or invalid values are treated as unset, which behaves like `0`.\n\nRecommended conventions:\n\n- Prefer lowercase ASCII with hyphens for shareable names (e.g. `tsx-helper`)\n- Make `description` specific: include both **what** the Skill does and **when** to use it (key words users will naturally mention)\n- Use `priority` sparingly for Skills that should reliably appear before the default alphabetical order in `/skills`. Negative priorities are allowed and sort below unset Skills.\n\n### Optional: gate a Skill on file paths (`paths:`)\n\nFor Skills that only matter to specific parts of a codebase, add a `paths:` list of glob patterns. The Skill stays out of the model's available-skills listing until a tool call touches a matching file:\n\n```yaml\n---\nname: tsx-helper\ndescription: React TSX component helper\npaths:\n  - 'src/**/*.tsx'\n  - 'packages/*/src/**/*.tsx'\n---\n```\n\nNotes:\n\n- Globs are matched relative to the project root with [picomatch](https://github.com/micromatch/picomatch); files outside the project root never trigger activation.\n- A path-gated Skill **stays activated for the rest of the session** once a matching file is touched. A new session, or a `refreshCache` triggered by editing any Skill file, resets activations.\n- `paths:` only gates **model** discovery, and only at the SkillTool listing level. Unless `user-invocable: false` is set, you can always invoke a path-gated Skill yourself via `/<skill-name>` or the `/skills` picker — that user path runs the Skill body regardless of activation state. The model side, however, stays gated until a matching file is touched: a slash invocation does **not** unlock model-side activation, so if you want the model to chain off your invocation (call `Skill { skill: ... }` itself), also access a file matching the skill's `paths:` first.\n- Combining `paths:` with `disable-model-invocation: true` is allowed but the gate has no effect — the Skill is hidden from the model regardless, so path activation never advertises it.\n\n### Optional: control user and model invocation\n\nSkills are user-invocable by default. To hide a Skill from direct slash-command use while keeping it available for model invocation, set `user-invocable: false`:\n\n```yaml\n---\nname: model-only-helper\ndescription: Helper the model can call when appropriate\nuser-invocable: false\n---\n```\n\nThis removes the Skill from `/<skill-name>` invocation and `/skills` picker results. It does not hide the Skill from the model.\n\nTo hide a Skill from model invocation while keeping direct user invocation available, set `disable-model-invocation: true`:\n\n```yaml\n---\nname: manual-helper\ndescription: Helper you invoke manually\ndisable-model-invocation: true\n---\n```\n\nYou can combine both fields, but then the Skill is not reachable through the normal user or model invocation paths.\n\n## Add supporting files\n\nCreate additional files alongside `SKILL.md`:\n\n```text\nmy-skill/\n├── SKILL.md (required)\n├── reference.md (optional documentation)\n├── examples.md (optional examples)\n├── scripts/\n│   └── helper.py (optional utility)\n└── templates/\n    └── template.txt (optional template)\n```\n\nReference these files from `SKILL.md`:\n\n````markdown\nFor advanced usage, see [reference.md](reference.md).\n\nRun the helper script:\n\n```bash\npython scripts/helper.py input.txt\n```\n````\n\n## View available Skills\n\nQwen Code discovers Skills from:\n\n- Personal Skills: `~/.qwen/skills/`\n- Project Skills: `.qwen/skills/`\n- Extension Skills: Skills provided by installed extensions\n\n### Extension Skills\n\nExtensions can provide custom skills that become available when the extension is enabled. These skills are stored in the extension's `skills/` directory and follow the same format as personal and project skills.\n\nExtension skills are automatically discovered and loaded when the extension is installed and enabled.\n\nTo see which extensions provide skills, check the extension's `qwen-extension.json` file for a `skills` field.\n\nTo view available Skills, ask Qwen Code directly:\n\n```text\nWhat Skills are available?\n```\n\n> **Heads up — model vs. user view.** Asking the model only surfaces Skills the model can currently see. If a Skill uses `paths:` (see \"Optional: gate a Skill on file paths\" above), it stays out of that listing until a matching file has been touched. The `/skills` slash command shows Skills you can invoke directly; Skills with `user-invocable: false` remain visible on disk and may still be visible to the model.\n\nOr browse the user-invocable list with the slash command (including path-gated Skills that have not activated yet):\n\n```text\n/skills\n```\n\nOr inspect the filesystem:\n\n```bash\n# List personal Skills\nls ~/.qwen/skills/\n\n# List project Skills (if in a project directory)\nls .qwen/skills/\n\n# View a specific Skill's content\ncat ~/.qwen/skills/my-skill/SKILL.md\n```\n\n## Test a Skill\n\nAfter creating a Skill, test it by asking questions that match your description.\n\nExample: if your description mentions \"PDF files\":\n\n```text\nCan you help me extract text from this PDF?\n```\n\nThe model autonomously decides to use your Skill if it matches the request — you don't need to explicitly invoke it.\n\n## Debug a Skill\n\nIf Qwen Code doesn't use your Skill, check these common issues:\n\n### Make the description specific\n\nToo vague:\n\n```yaml\ndescription: Helps with documents\n```\n\nSpecific:\n\n```yaml\ndescription: Extract text and tables from PDF files, fill forms, merge documents. Use when working with PDFs, forms, or document extraction.\n```\n\n### Verify file path\n\n- Personal Skills: `~/.qwen/skills/<skill-name>/SKILL.md`\n- Project Skills: `.qwen/skills/<skill-name>/SKILL.md`\n\n```bash\n# Personal\nls ~/.qwen/skills/my-skill/SKILL.md\n\n# Project\nls .qwen/skills/my-skill/SKILL.md\n```\n\n### Check YAML syntax\n\nInvalid YAML prevents the Skill metadata from loading correctly.\n\n```bash\ncat SKILL.md | head -n 15\n```\n\nEnsure:\n\n- Opening `---` on line 1\n- Closing `---` before Markdown content\n- Valid YAML syntax (no tabs, correct indentation)\n\n### View errors\n\nRun Qwen Code with debug mode to see Skill loading errors:\n\n```bash\nqwen --debug\n```\n\n## Share Skills with your team\n\nYou can share Skills through project repositories:\n\n1. Add the Skill under `.qwen/skills/`\n2. Commit and push\n3. Teammates pull the changes\n\n```bash\ngit add .qwen/skills/\ngit commit -m \"Add team Skill for PDF processing\"\ngit push\n```\n\n## Update a Skill\n\nEdit `SKILL.md` directly:\n\n```bash\n# Personal Skill\ncode ~/.qwen/skills/my-skill/SKILL.md\n\n# Project Skill\ncode .qwen/skills/my-skill/SKILL.md\n```\n\nChanges take effect the next time you start Qwen Code. If Qwen Code is already running, restart it to load the updates.\n\n## Remove a Skill\n\nDelete the Skill directory:\n\n```bash\n# Personal\nrm -rf ~/.qwen/skills/my-skill\n\n# Project\nrm -rf .qwen/skills/my-skill\ngit commit -m \"Remove unused Skill\"\n```\n\n## Best practices\n\n### Keep Skills focused\n\nOne Skill should address one capability:\n\n- Focused: \"PDF form filling\", \"Excel analysis\", \"Git commit messages\"\n- Too broad: \"Document processing\" (split into smaller Skills)\n\n### Write clear descriptions\n\nHelp the model discover when to use Skills by including specific triggers:\n\n```yaml\ndescription: Analyze Excel spreadsheets, create pivot tables, and generate charts. Use when working with Excel files, spreadsheets, or .xlsx data.\n```\n\n### Test with your team\n\n- Does the Skill activate when expected?\n- Are the instructions clear?\n- Are there missing examples or edge cases?\n"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_26e14bc0963d4b81843b4068",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"file_path\":\"C:\\\\Users\\\\DELL\\\\AppData\\\\Roaming\\\\npm\\\\node_modules\\\\@qwen-code\\\\qwen-code\\\\bundled\\\\qc-helper\\\\docs\\\\extension\\\\introduction.md\"}"
+            }
+          }
+        ],
+        "reasoning_content": "文档中没有提到 \"Superpowers skills\"。这可能是指 Qwen Code 的一个第三方扩展。让我搜索一下是否有相关的扩展信息，或者用户可能是指某个特定的技能包。\n\n让我查看扩展相关的文档。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_26e14bc0963d4b81843b4068",
+        "content": [
+          {
+            "type": "text",
+            "text": "# Qwen Code Extensions\n\nQwen Code extensions package prompts, MCP servers, subagents, skills and custom commands into a familiar and user-friendly format. With extensions, you can expand the capabilities of Qwen Code and share those capabilities with others. They are designed to be easily installable and shareable.\n\nExtensions and plugins from [Gemini CLI Extensions Gallery](https://geminicli.com/extensions/) and [Claude Code Marketplace](https://claudemarketplaces.com/) can be directly installed into Qwen Code. This cross-platform compatibility gives you access to a rich ecosystem of extensions and plugins, dramatically expanding Qwen Code's capabilities without requiring extension authors to maintain separate versions.\n\n## Extension management\n\nWe offer a suite of extension management tools using both `qwen extensions` CLI commands and `/extensions` slash commands within the interactive CLI.\n\n### Runtime Extension Management (Slash Commands)\n\nYou can manage extensions at runtime within the interactive CLI using `/extensions` slash commands. These commands support hot-reloading, meaning changes take effect immediately without restarting the application.\n\n| Command                               | Description                                                                                          |\n| ------------------------------------- | ---------------------------------------------------------------------------------------------------- |\n| `/extensions` or `/extensions manage` | Manage all installed extensions                                                                      |\n| `/extensions install <source>`        | Install an extension from a git URL, local path or archive, archive URL, npm package, or marketplace |\n| `/extensions explore [source]`        | Open extensions source page(Gemini or ClaudeCode) in your browser                                    |\n\n#### The interactive extension manager\n\nRunning `/extensions` (or `/extensions manage`) opens an interactive manager with three tabs. Press `Tab` or the `←`/`→` arrows to switch between them.\n\n- **Discover** — browse plugins from your configured marketplace sources. Type to search, `Enter` to view a plugin's details, and install it (you'll be asked to choose an install scope). Press `Ctrl+R` to re-fetch the listings, and `Esc` to go back.\n- **Installed** — your installed extensions, grouped by scope (**User level**, **Project level**, and favorites). Use `↑`/`↓` to navigate, `Space` to enable/disable an extension, `f` to favorite it, and `Enter` to open its details. MCP servers bundled by an extension appear nested under their parent extension with live connection status; you can enable or disable each server individually from there.\n- **Sources** — manage the marketplace sources that feed the Discover tab. Use `↑`/`↓` to navigate, `Enter` to select a source, and `d` to remove one. These are the same sources managed by the `qwen extensions sources` CLI commands described below.\n\nChanges made here hot-reload immediately, without restarting Qwen Code.\n\n### CLI Extension Management\n\nYou can also manage extensions using `qwen extensions` CLI commands. Note that changes made via CLI commands will be reflected in active CLI sessions on restart.\n\n### Installing an extension\n\nYou can install an extension using `qwen extensions install` from multiple sources:\n\n#### From Claude Code Marketplace\n\nQwen Code also supports plugins from the [Claude Code Marketplace](https://claudemarketplaces.com/). Install from a marketplace and choose a plugin:\n\n```bash\nqwen extensions install <marketplace-name>\n# or\nqwen extensions install <marketplace-github-url>\n```\n\nIf you want to install a specific plugin, you can use the format with plugin name:\n\n```bash\nqwen extensions install <marketplace-name>:<plugin-name>\n# or\nqwen extensions install <marketplace-github-url>:<plugin-name>\n```\n\nFor example, to install the `prompts.chat` plugin from the [f/awesome-chatgpt-prompts](https://claudemarketplaces.com/plugins/f-awesome-chatgpt-prompts) marketplace:\n\n```bash\nqwen extensions install f/awesome-chatgpt-prompts:prompts.chat\n# or\nqwen extensions install https://github.com/f/awesome-chatgpt-prompts:prompts.chat\n```\n\nClaude plugins are automatically converted to Qwen Code format during installation:\n\n- `claude-plugin.json` is converted to `qwen-extension.json`\n- Agent configurations are converted to Qwen subagent format\n- Skill configurations are converted to Qwen skill format\n- Tool mappings are automatically handled\n\nYou can quickly browse available extensions from different marketplaces using the `/extensions explore` command:\n\n```bash\n# Open Gemini CLI Extensions marketplace\n/extensions explore Gemini\n\n# Open Claude Code marketplace\n/extensions explore ClaudeCode\n```\n\nThis command opens the respective marketplace in your default browser, allowing you to discover new extensions to enhance your Qwen Code experience.\n\n> **Cross-Platform Compatibility**: This allows you to leverage the rich extension ecosystems from both Gemini CLI and Claude Code, dramatically expanding the available functionality for Qwen Code users.\n\n#### From Gemini CLI Extensions\n\nQwen Code fully supports extensions from the [Gemini CLI Extensions Gallery](https://geminicli.com/extensions/). Simply install them using the git URL:\n\n```bash\nqwen extensions install <gemini-cli-extension-github-url>\n# or\nqwen extensions install <owner>/<repo>\n```\n\nGemini extensions are automatically converted to Qwen Code format during installation:\n\n- `gemini-extension.json` is converted to `qwen-extension.json`\n- TOML command files are automatically migrated to Markdown format\n- MCP servers, context files, and settings are preserved\n\n#### From npm Registry\n\nQwen Code supports installing extensions from npm registries using scoped package names. This is ideal for teams with private registries that already have auth, versioning, and publishing infrastructure in place.\n\n```bash\n# Install the latest version\nqwen extensions install @scope/my-extension\n\n# Install a specific version\nqwen extensions install @scope/my-extension@1.2.0\n\n# Install from a custom registry\nqwen extensions install @scope/my-extension --registry https://your-registry.com\n```\n\nOnly scoped packages (`@scope/package-name`) are supported to avoid ambiguity with the `owner/repo` GitHub shorthand format.\n\n**Registry resolution** follows this priority:\n\n1. `--registry` CLI flag (explicit override)\n2. Scoped registry from `.npmrc` (e.g. `@scope:registry=https://...`)\n3. Default registry from `.npmrc`\n4. Fallback: `https://registry.npmjs.org/`\n\n**Authentication** is handled automatically via the `NPM_TOKEN` environment variable or registry-specific `_authToken` entries in your `.npmrc` file.\n\n> **Note:** npm extensions must include a `qwen-extension.json` file at the package root, following the same format as any other Qwen Code extension. See [Extension Releasing](./extension-releasing.md#releasing-through-npm-registry) for packaging details.\n\n#### From Git Repository\n\n```bash\nqwen extensions install https://github.com/github/github-mcp-server\n```\n\nThis will install the github mcp server extension.\n\n#### From Local Path\n\n```bash\nqwen extensions install /path/to/your/extension\n```\n\nLocal `.zip` and `.tar.gz` archives are also supported:\n\n```bash\nqwen extensions install /path/to/your/extension.zip\nqwen extensions install /path/to/your/extension.tar.gz\n```\n\nThe archive must contain a complete extension at its root, or a single top-level directory containing the extension.\n\nNote that we create a copy of the installed extension, so you will need to run `qwen extensions update` to pull in changes from both locally-defined extensions and those on GitHub.\n\n#### From Archive URL\n\n```bash\nqwen extensions install https://example.com/your/extension.zip\nqwen extensions install https://example.com/your/extension.tar.gz\n```\n\nArchive URLs can be updated later as long as the URL continues to point at a newer archive for the same extension.\n\n#### Choosing an install scope\n\nBy default, an installed extension is enabled globally (user scope). Pass `--scope project` to enable it only for the current workspace:\n\n```bash\nqwen extensions install <source> --scope project\n```\n\n`--scope workspace` is accepted as an alias of `--scope project`. This matches the scope choice offered when installing from the `/extensions manage` Discover tab.\n\n### Managing marketplace sources\n\nMarketplace sources (Claude plugin marketplaces) power the Discover tab in `/extensions manage`. You can manage them from the CLI as well:\n\n```bash\n# Add a marketplace (owner/repo, git URL, https URL to marketplace.json, or local path)\nqwen extensions sources add <source>\n\n# List configured marketplaces\nqwen extensions sources list\n\n# Re-fetch a marketplace's plugin listing\nqwen extensions sources update <name>\n\n# Remove a marketplace\nqwen extensions sources remove <name>\n```\n\n### Uninstalling an extension\n\nTo uninstall, run `qwen extensions uninstall extension-name`, so, in the case of the install example:\n\n```\nqwen extensions uninstall qwen-cli-security\n```\n\n### Disabling an extension\n\nExtensions are, by default, enabled across all workspaces. You can disable an extension entirely or for specific workspace.\n\nFor example, `qwen extensions disable extension-name` will disable the extension at the user level, so it will be disabled everywhere. `qwen extensions disable extension-name --scope=workspace` will only disable the extension in the current workspace.\n\n### Enabling an extension\n\nYou can enable extensions using `qwen extensions enable extension-name`. You can also enable an extension for a specific workspace using `qwen extensions enable extension-name --scope=workspace` from within that workspace.\n\nThis is useful if you have an extension disabled at the top-level and only enabled in specific places.\n\n### Updating an extension\n\nFor extensions installed from a local path or archive, an archive URL, a git repository, or an npm registry, you can explicitly update to the latest version with `qwen extensions update extension-name`. For npm extensions installed without a version pin (e.g. `@scope/pkg`), updates check the `latest` dist-tag. For those installed with a specific dist-tag (e.g. `@scope/pkg@beta`), updates track that tag. Extensions pinned to an exact version (e.g. `@scope/pkg@1.2.0`) are always considered up-to-date.\n\nYou can update all extensions with:\n\n```\nqwen extensions update --all\n```\n\n## How it works\n\nOn startup, Qwen Code looks for extensions in `<home>/.qwen/extensions`\n\nExtensions exist as a directory that contains a `qwen-extension.json` file. For example:\n\n`<home>/.qwen/extensions/my-extension/qwen-extension.json`\n\n### `qwen-extension.json`\n\nThe `qwen-extension.json` file contains the configuration for the extension. The file has the following structure:\n\n```json\n{\n  \"name\": \"my-extension\",\n  \"version\": \"1.0.0\",\n  \"mcpServers\": {\n    \"my-server\": {\n      \"command\": \"node my-server.js\"\n    }\n  },\n  \"channels\": {\n    \"my-platform\": {\n      \"entry\": \"dist/index.js\",\n      \"displayName\": \"My Platform Channel\"\n    }\n  },\n  \"contextFileName\": \"QWEN.md\",\n  \"commands\": \"commands\",\n  \"skills\": \"skills\",\n  \"agents\": \"agents\",\n  \"settings\": [\n    {\n      \"name\": \"API Key\",\n      \"description\": \"Your API key for the service\",\n      \"envVar\": \"MY_API_KEY\",\n      \"sensitive\": true\n    }\n  ]\n}\n```\n\n- `name`: The name of the extension. This is used to uniquely identify the extension and for conflict resolution when extension commands have the same name as user or project commands. The name should be lowercase or numbers and use dashes instead of underscores or spaces. This is how users will refer to your extension in the CLI. Note that we expect this name to match the extension directory name.\n- `version`: The version of the extension.\n- `mcpServers`: A map of MCP servers to configure. The key is the name of the server, and the value is the server configuration. These servers will be loaded on startup just like MCP servers configured in a [`settings.json` file](../configuration/settings.md). If both an extension and a `settings.json` file configure an MCP server with the same name, the server defined in the `settings.json` file takes precedence.\n  - Note that all MCP server configuration options are supported except for `trust`.\n- `channels`: A map of custom channel adapters. The key is the channel type name, and the value has an `entry` (path to compiled JS entry point) and optional `displayName`. The entry point must export a `plugin` object conforming to the `ChannelPlugin` interface. See [Channel Plugins](../features/channels/plugins) for a full guide.\n- `contextFileName`: The name of the file that contains the context for the extension. This will be used to load the context from the extension directory. If this property is not used but a `QWEN.md` file is present in your extension directory, then that file will be loaded.\n- `commands`: The directory containing custom commands (default: `commands`). Commands are `.md` files that define prompts.\n- `skills`: The directory containing custom skills (default: `skills`). Skills are discovered automatically and become available via the `/skills` command.\n- `agents`: The directory containing custom subagents (default: `agents`). Subagents are `.yaml` or `.md` files that define specialized AI assistants.\n- `settings`: An array of settings that the extension requires. When installing, users will be prompted to provide values for these settings. The values are stored securely and passed to MCP servers as environment variables.\n  - Each setting has the following properties:\n    - `name`: Display name for the setting\n    - `description`: A description of what this setting is used for\n    - `envVar`: The environment variable name that will be set\n    - `sensitive`: Boolean indicating if the value should be hidden (e.g., API keys, passwords)\n\n### Managing Extension Settings\n\nExtensions can require configuration through settings (such as API keys or credentials). These settings can be managed using the `qwen extensions settings` CLI command:\n\n**Set a setting value:**\n\n```bash\nqwen extensions settings set <extension-name> <setting-name> [--scope user|workspace]\n```\n\n**List all settings and current values for an extension:**\n\n```bash\nqwen extensions settings list <extension-name>\n```\n\nSettings can be configured at two levels:\n\n- **User level** (default): Settings apply across all projects (`~/.qwen/.env`)\n- **Workspace level**: Settings apply only to the current project (`.qwen/.env`)\n\nWorkspace settings take precedence over user settings. Sensitive settings are stored securely and never displayed in plain text.\n\nWhen Qwen Code starts, it loads all the extensions and merges their configurations. If there are any conflicts, the workspace configuration takes precedence.\n\n### Custom commands\n\nExtensions can provide [custom commands](../features/commands.md#4-custom-commands) by placing Markdown files in a `commands/` subdirectory within the extension directory. These commands follow the same format as user and project custom commands and use standard naming conventions.\n\n> **Note:** The command format has been updated from TOML to Markdown. TOML files are deprecated but still supported. You can migrate existing TOML commands using the automatic migration prompt that appears when TOML files are detected.\n\n**Example**\n\nAn extension named `gcp` with the following structure:\n\n```\n.qwen/extensions/gcp/\n├── qwen-extension.json\n└── commands/\n    ├── deploy.md\n    └── gcs/\n        └── sync.md\n```\n\nWould provide these commands:\n\n- `/deploy` - Shows as `[gcp] Custom command from deploy.md` in help\n- `/gcs:sync` - Shows as `[gcp] Custom command from sync.md` in help\n\n### Custom skills\n\nExtensions can provide custom skills by placing skill files in a `skills/` subdirectory within the extension directory. Each skill should have a `SKILL.md` file with YAML frontmatter defining the skill's name and description.\n\n**Example**\n\n```\n.qwen/extensions/my-extension/\n├── qwen-extension.json\n└── skills/\n    └── pdf-processor/\n        └── SKILL.md\n```\n\nThe skill will be available via the `/skills` command when the extension is active.\n\n### Custom subagents\n\nExtensions can provide custom subagents by placing agent configuration files in an `agents/` subdirectory within the extension directory. Agents are defined using YAML or Markdown files.\n\n**Example**\n\n```\n.qwen/extensions/my-extension/\n├── qwen-extension.json\n└── agents/\n    └── testing-expert.yaml\n```\n\nExtension subagents appear in the subagent manager dialog under \"Extension Agents\" section.\n\n### Conflict resolution\n\nExtension commands have the lowest precedence. When a conflict occurs with user or project commands:\n\n1. **No conflict**: Extension command uses its natural name (e.g., `/deploy`)\n2. **With conflict**: Extension command is renamed with the extension prefix (e.g., `/gcp.deploy`)\n\nFor example, if both a user and the `gcp` extension define a `deploy` command:\n\n- `/deploy` - Executes the user's deploy command\n- `/gcp.deploy` - Executes the extension's deploy command (marked with `[gcp]` tag)\n\n## Variables\n\nQwen Code extensions allow variable substitution in `qwen-extension.json`. This can be useful if e.g., you need the current directory to run an MCP server using `\"cwd\": \"${extensionPath}${/}run.ts\"`.\n\n**Supported variables:**\n\n| variable                   | description                                                                                                                                                   |\n| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |\n| `${extensionPath}`         | The fully-qualified path of the extension in the user's filesystem e.g., '/Users/username/.qwen/extensions/example-extension'. This will not unwrap symlinks. |\n| `${workspacePath}`         | The fully-qualified path of the current workspace.                                                                                                            |\n| `${/} or ${pathSeparator}` | The path separator (differs per OS).                                                                                                                          |\n"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "我来帮你搜索并安装 Superpowers skills 扩展。\n\n",
+        "tool_calls": [
+          {
+            "id": "call_aab647cbd96c400e90bf9d42",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions install superpowers\",\"description\":\"安装 Superpowers 扩展\"}"
+            }
+          }
+        ],
+        "reasoning_content": "文档中没有直接提到 \"Superpowers skills\"。这可能是指某个特定的扩展或技能包。让我搜索一下是否有名为 \"Superpowers\" 的扩展。\n\n用户可能是指某个特定的扩展，让我尝试使用 `/extensions explore` 命令来帮助用户找到它，或者直接在 Claude Code Marketplace 或 Gemini CLI Extensions Gallery 中搜索。\n\n让我先尝试搜索是否有 \"superpowers\" 相关的扩展。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_aab647cbd96c400e90bf9d42",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions install superpowers\nDirectory: (root)\nOutput: Install source not found: superpowers\nError: (none)\nExit Code: 1\nSignal: (none)\nProcess Group PGID: 23080"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_31314a41f05440d4bbd9ad60",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions sources list\",\"description\":\"列出已配置的扩展市场源\"}"
+            }
+          }
+        ],
+        "reasoning_content": "扩展未找到。让我尝试搜索一下是否有其他名称或来源。用户可能是指某个特定的 marketplace 或 GitHub 仓库。让我尝试探索可用的扩展市场。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_31314a41f05440d4bbd9ad60",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions sources list\nDirectory: (root)\nOutput: No marketplace sources added yet.\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 28904"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_98f9987836324d31817850fa",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions install claude-code-marketplace:superpowers\",\"description\":\"从 Claude Code Marketplace 安装 Superpowers\"}"
+            }
+          }
+        ],
+        "reasoning_content": "没有找到扩展源。让我尝试从 Claude Code Marketplace 搜索 \"superpowers\"。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_98f9987836324d31817850fa",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions install claude-code-marketplace:superpowers\nDirectory: (root)\nOutput: Install source not found: claude-code-marketplace\nError: (none)\nExit Code: 1\nSignal: (none)\nProcess Group PGID: 7488"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_b0fb4d2016604d8e84522750",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions sources add https://claudemarketplaces.com\",\"description\":\"添加 Claude Code Marketplace 作为扩展源\"}"
+            }
+          }
+        ],
+        "reasoning_content": "让我尝试添加 Claude Code Marketplace 作为扩展源，然后搜索 superpowers。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_b0fb4d2016604d8e84522750",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions sources add https://claudemarketplaces.com\nDirectory: (root)\nOutput: \"https://claudemarketplaces.com\" looks like a single extension, not a marketplace. Install it directly with: /extensions install https://claudemarketplaces.com\nError: (none)\nExit Code: 1\nSignal: (none)\nProcess Group PGID: 18204"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_100339fa2ef649b29602f438",
+            "type": "function",
+            "function": {
+              "name": "ask_user_question",
+              "arguments": "{\"questions\":[{\"question\":\"Superpowers skills 的具体来源是什么？\",\"options\":[{\"label\":\"Claude Code Marketplace\",\"description\":\"从 Claude Code Marketplace 安装\"},{\"label\":\"Gemini CLI Extensions\",\"description\":\"从 Gemini CLI Extensions Gallery 安装\"},{\"label\":\"GitHub 仓库\",\"description\":\"从特定 GitHub 仓库安装\"},{\"label\":\"npm 包\",\"description\":\"从 npm 注册表安装\"}],\"header\":\"扩展来源\",\"multiSelect\":false}]}"
+            }
+          }
+        ],
+        "reasoning_content": "让我尝试搜索 \"superpowers\" 在 Claude Code Marketplace 中的具体位置。可能需要使用不同的格式。让我尝试直接使用 npm 或 GitHub 搜索。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_100339fa2ef649b29602f438",
+        "content": [
+          {
+            "type": "text",
+            "text": "User has provided the following answers:\n\n**扩展来源**: https://github.com/obra/superpowers.git"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_8a8d3e823a36496189515a81",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions install https://github.com/obra/superpowers.git\",\"description\":\"从 GitHub 安装 Superpowers 扩展\"}"
+            }
+          }
+        ],
+        "reasoning_content": "用户提供了 GitHub 仓库地址。让我从这个仓库安装 Superpowers 扩展。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_8a8d3e823a36496189515a81",
+        "content": [
+          {
+            "type": "text",
+            "text": "Foreground command \"qwen extensions install https://github.com/obra/superpowers.git\" promoted to background as bg_73cac40f.\nStatus: running. PID: 11240.\nOutput snapshot at promote time saved to: C:\\Users\\DELL\\.qwen\\tmp\\3d4d4f1f72676c0070c6f30113dff6957d78a10eecaeec8edd6d61ebea55ab9a\\background-shells\\4f9340db-927a-42d7-81c1-d622a4928c09\\shell-bg_73cac40f.output\nTo inspect: `/tasks` (text), the Background tasks dialog (↓ + Enter on the footer pill), or `Read` the output file directly.\nTo stop the now-background process: `task_stop({ task_id: 'bg_73cac40f' })`."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_a75301aa82dc4a6d8dddaf38",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions list\",\"description\":\"列出已安装的扩展\"}"
+            }
+          }
+        ],
+        "reasoning_content": "命令被放到后台运行了。让我等待一下然后检查安装结果。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_a75301aa82dc4a6d8dddaf38",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions list\nDirectory: (root)\nOutput: 未安装扩展。\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 21788"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_220ad026a92847658d9be01a",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"file_path\":\"C:\\\\Users\\\\DELL\\\\.qwen\\\\tmp\\\\3d4d4f1f72676c0070c6f30113dff6957d78a10eecaeec8edd6d61ebea55ab9a\\\\background-shells\\\\4f9340db-927a-42d7-81c1-d622a4928c09\\\\shell-bg_73cac40f.output\"}"
+            }
+          }
+        ],
+        "reasoning_content": "后台任务可能还在运行。让我检查一下后台任务的输出。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_220ad026a92847658d9be01a",
+        "content": [
+          {
+            "type": "text",
+            "text": "? Select a plugin to install from marketplace \"superpowers-dev\": » - Use arrow-keys. Return to submit.\n>   [superpowers]"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "安装命令正在等待交互选择。由于这是一个需要用户交互的命令，请你手动执行以下命令完成安装：\n\n```bash\nqwen extensions install https://github.com/obra/superpowers.git\n```\n\n在提示选择时，使用方向键选择 `[superpowers]` 然后按回车确认。\n\n或者，你也可以使用交互式扩展管理器：\n\n```bash\n/extensions\n```\n\n然后在 \"Discover\" 标签页中搜索 \"superpowers\" 进行安装。",
+        "reasoning_content": "看起来安装命令正在等待用户交互选择插件。这是一个交互式命令，需要用户选择。根据用户偏好，用户喜欢手动执行命令。让我告诉用户如何手动完成安装。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "是安装完了吗"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_f3e058f8508c48f5a2fe077b",
+            "type": "function",
+            "function": {
+              "name": "run_shell_command",
+              "arguments": "{\"command\":\"qwen extensions list\",\"description\":\"检查已安装的扩展列表\"}"
+            }
+          }
+        ],
+        "reasoning_content": "用户在问是否安装完成了。让我检查一下后台任务的状态和输出。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_f3e058f8508c48f5a2fe077b",
+        "content": [
+          {
+            "type": "text",
+            "text": "Command: qwen extensions list\nDirectory: (root)\nOutput: 未安装扩展。\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 2112"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_ddc9e85adaea42f7b43748d5",
+            "type": "function",
+            "function": {
+              "name": "task_stop",
+              "arguments": "{\"task_id\":\"bg_73cac40f\"}"
+            }
+          }
+        ],
+        "reasoning_content": "扩展列表显示没有安装扩展。让我检查一下后台任务的状态。"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_ddc9e85adaea42f7b43748d5",
+        "content": [
+          {
+            "type": "text",
+            "text": "Cancellation requested for background shell \"bg_73cac40f\". Final status will be visible via /tasks (text) or the interactive Background tasks dialog (focus the footer Background tasks pill, then Enter) once the process drains; captured output remains at C:\\Users\\DELL\\.qwen\\tmp\\3d4d4f1f72676c0070c6f30113dff6957d78a10eecaeec8edd6d61ebea55ab9a\\background-shells\\4f9340db-927a-42d7-81c1-d622a4928c09\\shell-bg_73cac40f.output.\nCommand: qwen extensions install https://github.com/obra/superpowers.git"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "**没有安装完成**。安装命令卡在了交互选择界面，需要用户手动选择。\n\n请你手动执行以下命令完成安装：\n\n```bash\nqwen extensions install https://github.com/obra/superpowers.git\n```\n\n执行后：\n1. 使用 **方向键** 选择 `[superpowers]`\n2. 按 **回车** 确认\n3. 选择安装范围（User level 或 Project level）",
+        "reasoning_content": "后台任务被取消了。安装没有完成，因为命令卡在交互选择界面。由于这是一个需要用户交互的命令，我应该告诉用户手动执行。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<task-notification>\n<task-id>bg_73cac40f</task-id>\n<kind>shell</kind>\n<status>cancelled</status>\n<summary>Shell command \"qwen extensions install https://github.com/obra/superpowers.git\" was cancelled.</summary>\n<command>qwen extensions install https://github.com/obra/superpowers.git</command>\n<cwd>D:\\softdata\\workspaces\\buff\\smartcard-master-skills1</cwd>\n<pid>11240</pid>\n<output-tail truncated=\"false\">? Select a plugin to install from marketplace &quot;superpowers-dev&quot;: » - Use arrow-keys. Return to submit.\n&gt;   [superpowers]</output-tail>\n<output-file>C:\\Users\\DELL\\.qwen\\tmp\\3d4d4f1f72676c0070c6f30113dff6957d78a10eecaeec8edd6d61ebea55ab9a\\background-shells\\4f9340db-927a-42d7-81c1-d622a4928c09\\shell-bg_73cac40f.output</output-file>\n</task-notification>"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "后台安装任务已取消。安装未完成，因为命令需要交互选择。\n\n请手动执行：\n\n```bash\nqwen extensions install https://github.com/obra/superpowers.git\n```\n\n然后用方向键选择 `[superpowers]`，按回车确认即可。",
+        "reasoning_content": "用户收到了后台任务取消的通知。这确认了安装没有完成。我需要再次提醒用户手动执行安装命令。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[SUGGESTION MODE: Suggest what the user might naturally type next.]\n\nFIRST: Read the LAST FEW LINES of the assistant's most recent message -- that's where\nnext-step hints, tips, and actionable suggestions usually appear. Then check the user's\nrecent messages and original request.\n\nYour job is to predict what THEY would type - not what you think they should do.\n\nTHE TEST: Would they think \"I was just about to type that\"?\n\nPRIORITY: If the assistant's last message contains a tip or hint like \"Tip: type X to ...\"\nor \"type X to ...\", extract X as the suggestion. These are explicit next-step hints.\n\nEXAMPLES:\nAssistant says \"Tip: type post comments to publish findings\" → \"post comments\"\nAssistant says \"type /review to start\" → \"/review\"\nUser asked \"fix the bug and run tests\", bug is fixed → \"run the tests\"\nAfter code written → \"try it out\"\nModel offers options → suggest the one the user would likely pick, based on conversation\nModel asks to continue → \"yes\" or \"go ahead\"\nTask complete, obvious follow-up → \"commit this\" or \"push it\"\nAfter error or misunderstanding → silence (let them assess/correct)\n\nBe specific: \"run the tests\" beats \"continue\".\n\nNEVER SUGGEST:\n- Evaluative (\"looks good\", \"thanks\")\n- Questions (\"what about...?\")\n- AI-voice (\"Let me...\", \"I'll...\", \"Here's...\")\n- New ideas they didn't ask about\n- Multiple sentences\n\nStay silent if the next step isn't obvious from what the user said.\n\nFormat: 2-12 words, match the user's style. Or nothing.\n\nReply with ONLY the suggestion, no quotes or explanation."
+          }
+        ]
+      }
+    ],
+    "stream": false,
+    "max_tokens": 64000,
+    "metadata": {
+      "sessionId": "4f9340db-927a-42d7-81c1-d622a4928c09",
+      "promptId": "side-query:prompt-suggestion"
+    },
+    "vl_high_resolution_images": true,
+    "preserve_thinking": true,
+    "enable_thinking": false
+  },
+  "response": {
+    "id": "chatcmpl-f302060f-be3e-9728-a1b4-d8c90110c981",
+    "object": "chat.completion",
+    "created": 1794388,
+    "model": "qwen3.5-plus",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "qwen extensions install https://github.com/obra/superpowers.git",
+          "refusal": null
+        },
+        "finish_reason": "stop",
+        "logprobs": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 12620,
+      "completion_tokens": 14,
+      "total_tokens": 12634,
+      "prompt_tokens_details": {
+        "cached_tokens": 218
+      }
+    }
+  },
+  "error": null,
+  "context": {
+    "promptId": "side-query:prompt-suggestion"
+  },
+  "system": {
+    "hostname": "DESKTOP-M8U8UDS",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "nodeVersion": "v22.23.2"
+  }
+}

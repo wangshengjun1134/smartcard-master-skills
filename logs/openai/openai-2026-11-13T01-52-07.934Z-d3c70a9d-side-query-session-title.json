@@ -1,0 +1,106 @@
+{
+  "timestamp": "2026-11-13T01:52:07.934Z",
+  "request": {
+    "model": "qwen3.5-plus",
+    "messages": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "Generate a concise, sentence-case title (3-7 words) that captures what this programming-assistant session is about. Think of it as a git commit subject for the session.\n\nRules:\n- 3-7 words.\n- Sentence case: capitalize only the first word and proper nouns. NOT Title Case.\n- No trailing punctuation.\n- No quotes, backticks, or markdown.\n- Be specific about the user's actual goal — name the feature, bug, or subject area. Avoid vague \"Code changes\", \"Help request\", \"Conversation\".\n\nGood examples:\n{\"title\": \"Fix login button on mobile\"}\n{\"title\": \"Add OAuth authentication flow\"}\n{\"title\": \"Debug failing CI pipeline tests\"}\n{\"title\": \"重构用户鉴权中间件\"}\n\nBad (too vague): {\"title\": \"Code changes\"}\nBad (too long): {\"title\": \"Investigate and fix the session title generation issue in the chat recording service\"}\nBad (wrong case): {\"title\": \"Fix Login Button On Mobile\"}\nBad (trailing punctuation): {\"title\": \"Fix login button.\"}\n\nReturn ONLY a JSON object with a single \"title\" key. No preamble, no reasoning, no closing remarks.\n\nFollow the user-visible output language preference below for this side query.\n\nThis preference overrides any earlier language-selection rule in this system instruction.\n\n# Output language preference: auto\n<!-- qwen-code:llm-output-language: auto -->\n\n## Rule\nRespond in the same language as the user's input.\n\n## Exception\nIf the user **explicitly** requests a response in a specific language (e.g., \"please reply in English\"), switch to the user's requested language for the remainder of the conversation.\n\n## Mixed-language input\nIf the user mixes languages, use the language that best matches the user's main request.\n\n## Keep technical artifacts unchanged\nDo **not** translate or rewrite:\n- Code blocks, CLI commands, file paths, stack traces, logs, JSON keys, identifiers\n- Exact quoted text from the user (keep quotes verbatim)\n\n## Tool / system outputs\nRaw tool/system outputs may contain fixed-format English. Preserve them verbatim, and if needed, add a short explanation in the user's language below.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Conversation so far:\nt version. |\n| \"This doesn't count as a task\" | Action = task. Check for skills. |\n| \"The skill is overkill\" | Simple things become complex. Use it. |\n| \"I'll just do this one thing first\" | Check BEFORE doing anything. |\n| \"This feels productive\" | Undisciplined action wastes time. Skills prevent this. |\n| \"I know what that means\" | Knowing the concept ≠ using the skill. Invoke it. |\n\n## Platform Adaptation\n\nIf your harness appears here, read its reference file for special instructions:\n\n- Claude Code: `references/claude-code-tools.md`\n- Codex: `references/codex-tools.md`\n- Pi: `references/pi-tools.md`\n- Antigravity: `references/antigravity-tools.md`\n- Hermes Agent: `references/hermes-tools.md`\n- Muse: `references/muse-tools.md`\n\n## User Instructions\n\nUser instructions (CLAUDE.md, AGENTS.md, GEMINI.md, etc, direct requests) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.\n\nGenerate the session title now. Populate the schema with a single short title string."
+          }
+        ]
+      }
+    ],
+    "temperature": 0.2,
+    "max_tokens": 100,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "respond_in_schema",
+          "description": "Provide the response in provided schema",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "A concise sentence-case session title, 3-7 words, no trailing punctuation."
+              }
+            },
+            "required": [
+              "title"
+            ]
+          }
+        }
+      }
+    ],
+    "metadata": {
+      "sessionId": "8d179149-a409-46d3-b2ec-d9b0ccfa3007",
+      "promptId": "side-query:session-title"
+    },
+    "vl_high_resolution_images": true,
+    "preserve_thinking": true,
+    "enable_thinking": false
+  },
+  "response": {
+    "id": "chatcmpl-46964c75-66ec-93b4-9196-1f5d275beb05",
+    "object": "chat.completion",
+    "created": 1794534,
+    "model": "qwen3.5-plus",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "refusal": null,
+          "tool_calls": [
+            {
+              "id": "call_204de30af77e4334bf7e4c9c",
+              "type": "function",
+              "function": {
+                "name": "respond_in_schema",
+                "arguments": "{\"title\":\"Review skill usage guidelines and platform adaptations\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "stop",
+        "logprobs": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1043,
+      "completion_tokens": 32,
+      "total_tokens": 1075,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    }
+  },
+  "error": null,
+  "context": {
+    "promptId": "side-query:session-title"
+  },
+  "system": {
+    "hostname": "DESKTOP-M8U8UDS",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "nodeVersion": "v22.23.2"
+  }
+}

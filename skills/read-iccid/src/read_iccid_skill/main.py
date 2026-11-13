@@ -1,12 +1,17 @@
 import sys
 import json
+import os
+import tempfile
 from smartcard_skill_sdk import SkillContext, SessionStore, OutputCollector, ActionResult
 from .skill import ReadIccidSkill
 
 
 def main():
+    # 使用临时目录存储会话
+    session_dir = os.environ.get("SKILL_SESSION_DIR", tempfile.mkdtemp())
+    
     skill = ReadIccidSkill()
-    store = SessionStore("./.sessions")
+    store = SessionStore(session_dir)
     ctx = SkillContext(skill_id="read.iccid", sessions=store, output=OutputCollector())
 
     for line in sys.stdin:
@@ -39,7 +44,7 @@ def main():
                 }
             else:
                 result = skill.start(ctx, session)
-                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump()}
+                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(by_alias=True)}
             print(json.dumps(response), flush=True)
 
         elif method == "skill.handleActionResult":
@@ -54,7 +59,7 @@ def main():
             else:
                 action_result = ActionResult(**params["result"])
                 result = skill.handle_action_result(ctx, action_result, session)
-                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump()}
+                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(by_alias=True)}
             print(json.dumps(response), flush=True)
 
 

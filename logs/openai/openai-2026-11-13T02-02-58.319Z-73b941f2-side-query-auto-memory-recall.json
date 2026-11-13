@@ -1,0 +1,109 @@
+{
+  "timestamp": "2026-11-13T02:02:58.319Z",
+  "request": {
+    "model": "qwen3.5-plus",
+    "messages": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "You are selecting memories that will be useful to an AI coding assistant as it processes a user's query. You will be given the user's query and a list of available memory files with their filenames and descriptions.\n\nReturn a list of filenames for the memories that will clearly be useful to the assistant as it processes the user's query (up to 5). Only include memories that you are certain will be helpful based on their name and description.\n- If you are unsure if a memory will be useful in processing the user's query, then do not include it in your list. Be selective and discerning.\n- If there are no memories in the list that would clearly be useful, feel free to return an empty list.\n- If a list of recently-used tools is provided, do not select memories that are usage reference, API documentation, parameter schemas, field mappings, guessed call formats, or failed-call transcripts for those tools. Live tool definitions are the source of truth. Do still select durable operational context that cannot be obtained from the live schema, such as credentials location, ownership, external escalation paths, known gotchas, warnings, or confirmed workarounds.",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Query: 2\n\nAvailable memories:\n- [user] C:\\Users\\DELL\\.qwen\\memories\\user\\simplicity-preference.md (2026-09-30T13:49:42.755Z): User strongly prefers simple, low-invasion solutions over complex architectural changes\n- [user] C:\\Users\\DELL\\.qwen\\memories\\user\\env-config-preference.md (2026-09-29T14:47:18.942Z): User prefers storing API keys and configuration in system environment variables rather than .env files\n- [feedback] C:\\Users\\DELL\\.qwen\\memories\\user\\docling-full-capabilities.md (2026-09-19T17:33:10.498Z): User wants docling tested with full capabilities enabled (OCR, table recognition, layout analysis), not disabled\n- [user] C:\\Users\\DELL\\.qwen\\memories\\user\\telecom-rag-expertise.md (2026-09-17T14:24:18.106Z): User works on telecom industry RAG systems, specifically 3GPP standard document Q&A, and is interested in extending to eSIM/SIM specifications\n- [user] C:\\Users\\DELL\\.qwen\\memories\\user\\kylin-linux-deployment.md (2026-09-07T07:41:48.308Z): User's target deployment environment is KyLin (麒麟) Linux with UKUI desktop\n- [user] C:\\Users\\DELL\\.qwen\\memories\\user\\session-architecture-exploration.md (2026-09-07T04:15:21.084Z): User is exploring session sharing across multiple input sources and multi-user collaboration in channels\n\nRecently used tools: todo_write, read_file, skill, write_file"
+          }
+        ]
+      }
+    ],
+    "temperature": 0,
+    "stream": false,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "respond_in_schema",
+          "description": "Provide the response in provided schema",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "selected_memories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "selected_memories"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "max_tokens": 64000,
+    "metadata": {
+      "sessionId": "8d179149-a409-46d3-b2ec-d9b0ccfa3007",
+      "promptId": "side-query:auto-memory-recall"
+    },
+    "vl_high_resolution_images": true,
+    "preserve_thinking": true,
+    "enable_thinking": false
+  },
+  "response": {
+    "id": "chatcmpl-06806e33-1f0c-9603-81de-88ccc68f02e6",
+    "object": "chat.completion",
+    "created": 1794535,
+    "model": "qwen3.5-plus",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The user's query is \"2\", which is extremely vague and lacks context. Without knowing what \"2\" refers to (e.g., a step number, a file index, a specific error code, or a continuation of a previous conversation), it is impossible to determine which memories are relevant.\n\n- `simplicity-preference.md`: General preference, but no specific task to apply it to.\n- `env-config-preference.md`: Specific to config management, not applicable without a config-related query.\n- `docling-full-capabilities.md`: Specific to the docling tool, not applicable without mention of docling.\n- `telecom-rag-expertise.md`: Specific to telecom RAG, not applicable without domain context.\n- `kylin-linux-deployment.md`: Specific to deployment environment, not applicable without deployment context.\n- `session-architecture-exploration.md`: Specific to session sharing, not applicable without architectural context.\n\nSince the query provides no actionable information to link to any of these specific contexts, no memories can be confidently selected as useful.\n\n",
+          "refusal": null,
+          "tool_calls": [
+            {
+              "id": "call_4fa4e5ff218a4d688ec06567",
+              "type": "function",
+              "function": {
+                "name": "respond_in_schema",
+                "arguments": "{\"selected_memories\":[]}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "stop",
+        "logprobs": null
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 973,
+      "completion_tokens": 250,
+      "total_tokens": 1223,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    }
+  },
+  "error": null,
+  "context": {
+    "promptId": "side-query:auto-memory-recall"
+  },
+  "system": {
+    "hostname": "DESKTOP-M8U8UDS",
+    "platform": "win32",
+    "release": "10.0.26200",
+    "nodeVersion": "v22.23.2"
+  }
+}

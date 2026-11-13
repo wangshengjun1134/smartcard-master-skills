@@ -1,6 +1,12 @@
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Any
+
+
+def to_camel(s: str) -> str:
+    """将 snake_case 转换为 camelCase"""
+    parts = s.split("_")
+    return parts[0] + "".join(word.capitalize() for word in parts[1:])
 
 
 class SkillStatus(str, Enum):
@@ -30,6 +36,8 @@ class ActionResultStatus(str, Enum):
 
 
 class Action(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    
     action_id: str
     type: ActionType
     name: str
@@ -40,6 +48,8 @@ class Action(BaseModel):
 
 
 class ActionResult(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    
     action_id: str
     type: str
     status: ActionResultStatus
@@ -55,6 +65,8 @@ class Output(BaseModel):
 
 
 class InputRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    
     request_id: str
     prompt: str
     input_schema: dict[str, Any]
@@ -68,6 +80,8 @@ class Error(BaseModel):
 
 
 class SkillResult(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    
     session_id: str
     status: SkillStatus
     next_action: Action | None = None

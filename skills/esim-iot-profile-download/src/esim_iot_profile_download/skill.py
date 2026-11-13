@@ -47,31 +47,31 @@ class EsimIotProfileDownloadSkill(Skill):
     def init(self, ctx: SkillContext, params: dict) -> dict:
         """初始化 Skill"""
         session = ctx.sessions.create(params, ctx.skill_id)
-        
+
         # 保存输入参数
         session.data["params"] = params
         session.data["mode"] = params.get("mode", "indirect")
         session.data["state"] = EsimState.START
-        
+
         # 初始化资源管理器
         resources_dir = params.get("resources_dir")
         try:
             resource_manager = ResourceManager(resources_dir)
             cert_manager = CertificateManager(resource_manager)
             profile_manager = ProfileManager(resource_manager)
-            
+
             # 预加载证书
             session.data["dp_auth_cert"] = cert_manager.get_dp_auth_cert().hex().upper()
             session.data["dp_auth_key"] = cert_manager.get_dp_auth_key().hex().upper()
             session.data["dp_pb_cert"] = cert_manager.get_dp_pb_cert().hex().upper()
             session.data["dp_pb_key"] = cert_manager.get_dp_pb_key().hex().upper()
             session.data["ci_cert"] = cert_manager.get_ci_cert().hex().upper()
-            
+
             # 间接模式需要 eIM 证书
             if session.data["mode"] == "indirect":
                 session.data["eim_cert"] = cert_manager.get_eim_cert().hex().upper()
                 session.data["eim_key"] = cert_manager.get_eim_key().hex().upper()
-            
+
             # 预加载 Profile 包
             iccid = params.get("iccid", "")
             if iccid:
@@ -79,13 +79,16 @@ class EsimIotProfileDownloadSkill(Skill):
                     session.data["profile_package"] = profile_manager.get_profile_package(iccid)
                 except ResourceLoadError as e:
                     ctx.output.text(f"警告: {e}")
-            
+
             ctx.output.info("资源加载完成")
-            
+
         except ResourceLoadError as e:
             ctx.output.text(f"警告: 资源加载失败 - {e}")
             # 继续执行，但某些步骤可能失败
-        
+
+        # 保存修改后的 session（create 时已经保存了一次，但 data 被修改了需要再次保存）
+        ctx.sessions.save(session, ctx.skill_id)
+
         return {
             "sessionId": session.session_id,
             "manifest": self.get_manifest(),
@@ -97,6 +100,9 @@ class EsimIotProfileDownloadSkill(Skill):
         ctx.output.info("开始 eSIM Profile 下载流程")
         
         # 第一步：冷复位
+        session.data["state"] = EsimState.WAIT_RESET
+        ctx.sessions.save(session, ctx.skill_id)
+        
         return self._do_reset(ctx, session)
     
     def handle_action_result(

@@ -44,6 +44,7 @@ def main():
                 }
             else:
                 result = skill.start(ctx, session)
+                store.save(session, "read.iccid")  # 保存状态
                 response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(by_alias=True)}
             print(json.dumps(response), flush=True)
 
@@ -59,6 +60,7 @@ def main():
             else:
                 action_result = ActionResult(**params["result"])
                 result = skill.handle_action_result(ctx, action_result, session)
+                store.save(session, "read.iccid")  # 保存状态
                 response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(by_alias=True)}
             print(json.dumps(response), flush=True)
 

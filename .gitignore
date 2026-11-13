@@ -13,3 +13,10 @@ skills/**/.sessions/
 # IDE
 .vscode/
 .idea/
+
+# 日志文件
+logs/
+*.log
+
+# 临时文件
+test_stderr.txt

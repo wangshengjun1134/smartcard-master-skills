@@ -21,6 +21,7 @@ from .asn1_codec import (
     decode_profiles_info,
     Asn1CodecError
 )
+from .resources import ResourceManager, CertificateManager, ProfileManager, ResourceLoadError
 
 
 class EsimIotProfileDownloadSkill(Skill):
@@ -51,6 +52,39 @@ class EsimIotProfileDownloadSkill(Skill):
         session.data["params"] = params
         session.data["mode"] = params.get("mode", "indirect")
         session.data["state"] = EsimState.START
+        
+        # 初始化资源管理器
+        resources_dir = params.get("resources_dir")
+        try:
+            resource_manager = ResourceManager(resources_dir)
+            cert_manager = CertificateManager(resource_manager)
+            profile_manager = ProfileManager(resource_manager)
+            
+            # 预加载证书
+            session.data["dp_auth_cert"] = cert_manager.get_dp_auth_cert().hex().upper()
+            session.data["dp_auth_key"] = cert_manager.get_dp_auth_key().hex().upper()
+            session.data["dp_pb_cert"] = cert_manager.get_dp_pb_cert().hex().upper()
+            session.data["dp_pb_key"] = cert_manager.get_dp_pb_key().hex().upper()
+            session.data["ci_cert"] = cert_manager.get_ci_cert().hex().upper()
+            
+            # 间接模式需要 eIM 证书
+            if session.data["mode"] == "indirect":
+                session.data["eim_cert"] = cert_manager.get_eim_cert().hex().upper()
+                session.data["eim_key"] = cert_manager.get_eim_key().hex().upper()
+            
+            # 预加载 Profile 包
+            iccid = params.get("iccid", "")
+            if iccid:
+                try:
+                    session.data["profile_package"] = profile_manager.get_profile_package(iccid)
+                except ResourceLoadError as e:
+                    ctx.output.text(f"警告: {e}")
+            
+            ctx.output.info("资源加载完成")
+            
+        except ResourceLoadError as e:
+            ctx.output.text(f"警告: 资源加载失败 - {e}")
+            # 继续执行，但某些步骤可能失败
         
         return {
             "sessionId": session.session_id,
@@ -323,26 +357,29 @@ class EsimIotProfileDownloadSkill(Skill):
         challenge = session.data.get("challenge", "")
         transaction_id = challenge[:32] if len(challenge) >= 32 else challenge.ljust(32, "0")
         
-        # 构造 server_signed1 (简化版本，实际需要签名)
+        # 获取证书数据
+        dp_auth_cert = session.data.get("dp_auth_cert", "")
+        dp_auth_key = session.data.get("dp_auth_key", "")
+        euicc_ci_pk_id = session.data.get("euicc_ci_pk_id", "0102030405060708")
+        
+        # 构造 server_signed1
         # 实际实现需要：
         # 1. 用 SM-DP+ 私钥签名 transaction_id + challenge
         # 2. 编码为 ASN.1 结构
+        # 这里使用简化版本
         server_signed1 = bytes.fromhex("3000")  # 空 SEQUENCE 占位
         
-        # 签名 (占位，实际需要 ECDSA 签名)
+        # 签名 (需要实际 ECDSA 签名，这里使用占位)
         server_signature1 = bytes(64)
         
-        # euiccCiPkId (从 EuiccInfo1 中获取，这里用占位值)
-        euicc_ci_pk_id = bytes.fromhex("0102030405060708")
-        
-        # 服务器证书 (占位)
-        server_certificate = bytes.fromhex("3000")
+        # 服务器证书
+        server_certificate = bytes.fromhex(dp_auth_cert) if dp_auth_cert else bytes.fromhex("3000")
         
         try:
             auth_data = encode_bf38_authenticate_server_request(
                 server_signed1=server_signed1,
                 server_signature1=server_signature1,
-                euicc_ci_pk_id=euicc_ci_pk_id,
+                euicc_ci_pk_id=bytes.fromhex(euicc_ci_pk_id) if isinstance(euicc_ci_pk_id, str) else euicc_ci_pk_id,
                 server_certificate=server_certificate,
                 matching_id=matching_id,
                 tac=tac
@@ -380,11 +417,12 @@ class EsimIotProfileDownloadSkill(Skill):
                 f"SmdpSigned2 编码失败: {e}"
             )
         
-        # 签名 (占位，实际需要 ECDSA 签名)
+        # 签名 (需要实际 ECDSA 签名，这里使用占位)
         smdp_signature2 = bytes(64)
         
-        # 服务器证书 (占位)
-        smdp_certificate = bytes.fromhex("3000")
+        # 获取服务器证书
+        dp_pb_cert = session.data.get("dp_pb_cert", "")
+        smdp_certificate = bytes.fromhex(dp_pb_cert) if dp_pb_cert else bytes.fromhex("3000")
         
         try:
             download_data = encode_bf21_prepare_download_request(
@@ -489,8 +527,9 @@ class EsimIotProfileDownloadSkill(Skill):
         eim_id = params.get("eim_id", "default-eim")
         eim_counter = params.get("eim_initial_counter", 1)
         
-        # eIM 证书 (占位，实际应从资源文件加载)
-        eim_certificate = b""
+        # 获取 eIM 证书
+        eim_cert_hex = session.data.get("eim_cert", "")
+        eim_certificate = bytes.fromhex(eim_cert_hex) if eim_cert_hex else b""
         
         try:
             eim_data = encode_bf57_add_initial_eim(

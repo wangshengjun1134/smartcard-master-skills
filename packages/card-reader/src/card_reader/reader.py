@@ -8,6 +8,7 @@ from typing import Optional, List, Tuple
 from smartcard.System import readers
 from smartcard.CardConnection import CardConnection
 from smartcard.Exceptions import CardConnectionException, NoCardException
+from smartcard.util import toBytes
 
 
 class CardReaderError(Exception):
@@ -69,7 +70,12 @@ class CardReader:
             
             reader = self._reader_list[self.reader_index]
             self.connection = reader.createConnection()
-            self.connection.connect()
+            # Try T=1 protocol first (more common for modern cards)
+            try:
+                self.connection.connect(CardConnection.T1_protocol)
+            except CardConnectionException:
+                # Fall back to T=0 protocol
+                self.connection.connect(CardConnection.T0_protocol)
             
             # Get ATR
             atr = self.connection.getATR()

@@ -35,14 +35,18 @@ class ApduBuilder:
         return "00A40004023F00"
     
     @staticmethod
-    def select_isdr() -> str:
+    def select_isdr(channel: int = 0) -> str:
         """SELECT ISD-R (Issuer Security Domain)
-        
+
         ISD-R AID: A0000005591010FFFFFFFF8900000100
+        
+        Args:
+            channel: 逻辑通道号 (0-3)，0 表示基本通道
         """
         # 使用 DF name 选择
         aid = "A0000005591010FFFFFFFF8900000100"
-        cla = 0x00
+        # CLA = 通道号 (00, 01, 02, 03)
+        cla = channel & 0x03
         ins = 0xA4
         p1 = 0x04  # 按 DF name 选择
         p2 = 0x00
@@ -116,15 +120,19 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
     
     @staticmethod
-    def get_euicc_info1() -> str:
+    def get_euicc_info1(channel: int = 0) -> str:
         """GetEuiccInfo1 (BF20)
 
         获取 eUICC 信息（EID、默认 SM-DP+ 地址等）
-        
-        ES10 命令格式: 80 E2 91 00 Lc [BF 20 00]
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 20 00]
         注意：无 Le 字段
+        
+        Args:
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
@@ -133,15 +141,19 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
 
     @staticmethod
-    def get_euicc_challenge() -> str:
+    def get_euicc_challenge(channel: int = 0) -> str:
         """GetEuiccChallenge (BF2E)
 
         获取 eUICC 挑战值（用于认证）
-        
-        ES10 命令格式: 80 E2 91 00 Lc [BF 2E 00]
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 2E 00]
         注意：无 Le 字段
+        
+        Args:
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
@@ -150,85 +162,138 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
-    def authenticate_server(auth_data: str) -> str:
+    def authenticate_server(auth_data: str, channel: int = 0) -> list:
         """AuthenticateServer (BF38)
-        
+
         服务器认证（SM-DP+ 认证）
+
+        格式: (80+channel) E2 11 00 Lc [auth_data]
+        注意：auth_data 已经是完整的 BF38 数据（包含 BF38 标签和长度）
         
+        返回: APDU 列表（如果数据超过 255 字节，会分块）
+
         Args:
-            auth_data: 认证数据（ASN.1 编码）
+            auth_data: 认证数据（已经是完整的 BF38 数据，包含 BF38 标签）
+            channel: 逻辑通道号 (0-3)
+            
+        Returns:
+            APDU 列表（十六进制字符串）
         """
-        cla = 0x80
-        ins = 0xBF
-        p1 = 0x38
+        # CLA = 0x80 + 通道号 (ES10 命令格式)
+        cla = 0x80 + (channel & 0x03)
+        ins = 0xE2  # ES10 命令
+        p1 = 0x11   # 固定参数
         p2 = 0x00
-        
-        # 分块处理（如果数据超过 255 字节）
-        if len(auth_data) > 510:  # 255 bytes = 510 hex chars
-            return ApduBuilder._build_chained_apdu(cla, ins, p1, p2, auth_data)
-        
-        lc = len(auth_data) // 2
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{auth_data}"
+
+        # auth_data 已经是完整的 BF38 数据（包含 BF38 标签和长度）
+        # 不需要再添加 BF38 标签
+        data = auth_data
+
+        lc = len(data) // 2
+        if lc > 255:
+            # 需要分块处理
+            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, data)
+
+        return [f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"]
     
     @staticmethod
-    def prepare_download(download_data: str) -> str:
+    def prepare_download(download_data: str, channel: int = 0) -> list:
         """PrepareDownload (BF21)
-        
+
         准备下载 Profile
         
+        格式: (80+channel) E2 11 00 Lc [download_data]
+        注意：download_data 已经是完整的 BF21 数据（包含 BF21 标签和长度）
+        
+        返回: APDU 列表（如果数据超过 255 字节，会分块）
+
         Args:
-            download_data: 下载数据（ASN.1 编码）
+            download_data: 下载数据（已经是完整的 BF21 数据，包含 BF21 标签）
+            channel: 逻辑通道号 (0-3)
+            
+        Returns:
+            APDU 列表（十六进制字符串）
         """
-        cla = 0x80
-        ins = 0xBF
-        p1 = 0x21
+        # CLA = 0x80 + 通道号 (ES10 命令格式)
+        cla = 0x80 + (channel & 0x03)
+        ins = 0xE2  # ES10 命令
+        p1 = 0x11   # 固定参数
         p2 = 0x00
+
+        # download_data 已经是完整的 BF21 数据（包含 BF21 标签和长度）
+        # 不需要再添加 BF21 标签
+        data = download_data
+
+        lc = len(data) // 2
+        if lc > 255:
+            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, data)
         
-        if len(download_data) > 510:
-            return ApduBuilder._build_chained_apdu(cla, ins, p1, p2, download_data)
-        
-        lc = len(download_data) // 2
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{download_data}"
-    
+        return [f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"]
+
     @staticmethod
-    def load_profile_package(package_data: str, block_number: int = 0, is_last: bool = False) -> str:
+    def load_profile_package(package_data: str, block_number: int = 0, is_last: bool = False, channel: int = 0) -> list:
         """LoadProfilePackage (BF36)
+
+        加载 Profile 包
         
-        加载 Profile 包（可能需要分块）
+        格式: (80+channel) E2 11 00 Lc [BF 36 + 长度 + package_data]
+        注意：package_data 是原始 Profile 包内容，需要添加 BF36 标签
         
+        返回: APDU 列表（如果数据超过 255 字节，会分块）
+
         Args:
-            package_data: Profile 包数据
-            block_number: 块号（从 0 开始）
-            is_last: 是否为最后一块
+            package_data: Profile 包数据（原始内容，不包含 BF36 标签）
+            block_number: 块号（从 0 开始）- 注：当前实现未使用
+            is_last: 是否为最后一块 - 注：当前实现未使用
+            channel: 逻辑通道号 (0-3)
+            
+        Returns:
+            APDU 列表（十六进制字符串）
         """
-        cla = 0x80
-        ins = 0xBF
-        p1 = 0x36
-        p2 = block_number
+        # CLA = 0x80 + 通道号 (ES10 命令格式)
+        cla = 0x80 + (channel & 0x03)
+        ins = 0xE2  # ES10 命令
+        p1 = 0x11   # 固定参数
+        p2 = 0x00
+
+        # package_data 是原始内容，需要添加 BF36 标签和长度
+        package_data_len = len(package_data) // 2
         
-        # 最后一块的 P2 高位置 1
-        if is_last:
-            p2 |= 0x80
+        # 构造 BER-TLV 格式的长度
+        if package_data_len > 255:
+            # 长格式: 82 XX XX (2字节长度)
+            data = f"BF3682{package_data_len:04X}{package_data}"
+        elif package_data_len > 127:
+            # 长格式: 81 XX (1字节长度)
+            data = f"BF3681{package_data_len:02X}{package_data}"
+        else:
+            # 短格式
+            data = f"BF36{package_data_len:02X}{package_data}"
+
+        lc = len(data) // 2
+        if lc > 255:
+            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, data)
         
-        if len(package_data) > 510:
-            return ApduBuilder._build_chained_apdu(cla, ins, p1, p2, package_data)
-        
-        lc = len(package_data) // 2
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{package_data}"
+        return [f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"]
     
     @staticmethod
-    def get_profiles_info() -> str:
+    def get_profiles_info(channel: int = 0) -> str:
         """GetProfilesInfo (BF2D)
 
         获取 Profile 信息（包括 Profile 状态）
+
+        ES10 命令格式: (80+channel) E2 91 00 03 BF 2D 00
+        注意：Lc=03, 数据为 BF2D00 (tag + Le=00)
         
-        ES10 命令格式: 80 E2 91 00 Lc [BF 2D 00]
-        注意：无 Le 字段
+        Args:
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
+        # 数据: BF2D (tag) + 00 (Le)
         data = "BF2D00"
         lc = len(data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
@@ -236,15 +301,19 @@ class ApduBuilder:
     # ========== 清理相关 APDU ==========
     
     @staticmethod
-    def euicc_memory_reset() -> str:
+    def euicc_memory_reset(channel: int = 0) -> str:
         """EuiccMemoryReset (BF34)
 
         重置 eUICC 内存，清除之前的下载状态
-        
-        ES10 命令格式: 80 E2 91 00 Lc [BF 34 04 82 02 05 E0]
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 34 04 82 02 05 E0]
         注意：无 Le 字段
+        
+        Args:
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
@@ -253,28 +322,37 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
-    def fetch(length: int) -> str:
+    def fetch(length: int, channel: int = 0) -> str:
         """FETCH (91XX 响应)
-        
+
         处理 eUICC 异步响应
+        
+        Args:
+            length: 数据长度
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
-        ins = 0x12
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
+        ins = 0x12  # FETCH
         p1 = 0x00
         p2 = 0x00
         le = length
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{le:02X}"
     
     @staticmethod
-    def list_notification() -> str:
+    def list_notification(channel: int = 0) -> str:
         """ListNotification (BF28)
 
         列出待处理的通知
-        
-        ES10 命令格式: 80 E2 91 00 Lc [BF 28 00]
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 28 00]
         注意：无 Le 字段
+        
+        Args:
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
@@ -283,15 +361,17 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
-    def remove_notification(sequence: str) -> str:
+    def remove_notification(sequence: str, channel: int = 0) -> str:
         """RemoveNotification (BF30)
-        
+
         删除指定序号的通知
-        
+
         Args:
             sequence: 通知序号（十六进制字符串）
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
+        # CLA = 0x80 + 通道号
+        cla = 0x80 + (channel & 0x03)
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
@@ -343,13 +423,59 @@ class ApduBuilder:
     @staticmethod
     def _build_chained_apdu(cla: int, ins: int, p1: int, p2: int, data: str) -> str:
         """构造链式 APDU（数据超过 255 字节时）
-        
+
         注意：这里只返回第一块，后续块需要调用者处理
         """
         # 第一块：P1 保持不变，P2 的最高位为 0
         first_block = data[:510]  # 255 bytes
         lc = len(first_block) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{first_block}"
+
+    @staticmethod
+    def _build_chained_apdu_list(cla: int, ins: int, p1: int, p2: int, data: str) -> list:
+        """构造链式 APDU 列表（数据超过 255 字节时）
+        
+        返回所有分块的 APDU 列表
+        
+        根据 SGP.22/SGP.33 规范，ES10 命令的链式分块格式：
+        - 第一块：P1 = 0x11, P2 = 0x00
+        - 中间块：P1 = 0x11, P2 = 块号（递增）
+        - 最后一块：P1 = 0x91, P2 = 块号
+        
+        Args:
+            cla: CLA 字节
+            ins: INS 字节
+            p1: P1 参数（第一块使用）
+            p2: P2 参数（第一块使用，通常为 0x00）
+            data: 完整数据（已经是包含标签的连续数据）
+            
+        Returns:
+            APDU 列表
+        """
+        apdus = []
+        max_block_size = 255  # 每块最大 255 字节
+        
+        # 计算总块数
+        total_blocks = (len(data) + max_block_size * 2 - 1) // (max_block_size * 2)
+        
+        for block_num, i in enumerate(range(0, len(data), max_block_size * 2)):
+            block = data[i:i + max_block_size * 2]
+            lc = len(block) // 2
+            
+            # 确定 P1 和 P2
+            if block_num == total_blocks - 1:
+                # 最后一块：P1 = 0x91
+                block_p1 = 0x91
+            else:
+                # 非最后一块：P1 = 0x11
+                block_p1 = 0x11
+            
+            # P2 = 块号（从 0 开始）
+            block_p2 = block_num
+            
+            apdus.append(f"{cla:02X}{ins:02X}{block_p1:02X}{block_p2:02X}{lc:02X}{block}")
+        
+        return apdus
 
 
 class ResponseParser:

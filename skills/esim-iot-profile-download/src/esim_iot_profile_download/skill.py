@@ -52,6 +52,28 @@ def _load_ec_private_key(key_bytes: bytes):
     return serialization.load_der_private_key(key_bytes, password=None, backend=default_backend())
 
 
+def _ber_total_length(data: bytes) -> int:
+    """按 BER 头部计算整条 TLV 的总字节数（tag + len + value）"""
+    if len(data) < 2:
+        return -1
+    pos = 1
+    if (data[0] & 0x1F) == 0x1F:
+        if len(data) < 3:
+            return -1
+        pos = 2
+    lb = data[pos]
+    pos += 1
+    if lb & 0x80:
+        n = lb & 0x7F
+        if len(data) < pos + n:
+            return -1
+        length = int.from_bytes(data[pos:pos + n], 'big')
+        pos += n
+    else:
+        length = lb
+    return pos + length
+
+
 def _der_signature_to_raw(der_signature: bytes) -> bytes:
     """把 DER 编码的 ECDSA 签名转为 64 字节裸 r||s
 
@@ -256,6 +278,18 @@ class EsimIotProfileDownloadSkill(Skill):
                 ctx, session, result.data.get("response", "")
             )
 
+        elif current_state == EsimState.WAIT_CLEANUP_RESET:
+            return self._do_cleanup_open_channel(ctx, session)
+
+        elif current_state == EsimState.WAIT_CLEANUP_OPEN_CHANNEL:
+            channel_hex = result.data.get("response", "")
+            if len(channel_hex) >= 2:
+                session.data["channel"] = int(channel_hex[:2], 16)
+            return self._do_cleanup_select_isdr(ctx, session)
+
+        elif current_state == EsimState.WAIT_CLEANUP_SELECT_ISDR:
+            return self._do_get_euicc_challenge(ctx, session)
+
         elif current_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
             response = result.data.get("response", "")
@@ -308,23 +342,32 @@ class EsimIotProfileDownloadSkill(Skill):
             
             # 所有分块发送完成，解析响应
             response = result.data.get("response", "")
-            if response:
-                try:
-                    response_bytes = bytes.fromhex(response)
-                    auth_status = check_authenticate_server_response(response_bytes)
-                    if not auth_status["ok"]:
-                        return SkillResult.failed(
-                            session.session_id,
-                            "AUTHENTICATE_SERVER_FAILED",
-                            f"卡片拒绝认证: errorCode={auth_status['error_code']} "
-                            f"({auth_status['error_name']})"
-                        )
-                    auth_ok = decode_authenticate_server_ok(response_bytes)
-                    session.data["transaction_id"] = auth_ok["transaction_id"] or auth_status.get("transaction_id") or "01"
-                    session.data["euicc_signature1"] = auth_ok["euicc_signature1"].hex().upper()
-                    ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
-                except Exception as e:
-                    ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
+            if not response:
+                return SkillResult.failed(
+                    session.session_id,
+                    "AUTHENTICATE_SERVER_NO_RESPONSE",
+                    "AuthenticateServer 未返回数据，无法继续 PrepareDownload"
+                )
+            try:
+                response_bytes = bytes.fromhex(response)
+                auth_status = check_authenticate_server_response(response_bytes)
+                if not auth_status["ok"]:
+                    return SkillResult.failed(
+                        session.session_id,
+                        "AUTHENTICATE_SERVER_FAILED",
+                        f"卡片拒绝认证: errorCode={auth_status['error_code']} "
+                        f"({auth_status['error_name']})"
+                    )
+                auth_ok = decode_authenticate_server_ok(response_bytes)
+                session.data["transaction_id"] = auth_ok["transaction_id"] or auth_status.get("transaction_id") or "01"
+                session.data["euicc_signature1"] = auth_ok["euicc_signature1"].hex().upper()
+                ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
+            except Exception as e:
+                return SkillResult.failed(
+                    session.session_id,
+                    "AUTHENTICATE_SERVER_PARSE_ERROR",
+                    f"无法解析 AuthenticateServer 响应: {e}"
+                )
             return self._do_prepare_download(ctx, session)
 
         elif current_state == EsimState.WAIT_PREPARE_DOWNLOAD:
@@ -342,7 +385,8 @@ class EsimIotProfileDownloadSkill(Skill):
             try:
                 response_bytes = bytes.fromhex(response)
                 pd_response = decode_prepare_download_response(response_bytes)
-                session.data["transaction_id"] = pd_response.get("transaction_id", "")
+                if pd_response.get("transaction_id"):
+                    session.data["transaction_id"] = pd_response["transaction_id"]
                 euicc_otpk = pd_response.get("euicc_otpk", b"")
                 if euicc_otpk:
                     session.data["euicc_otpk"] = euicc_otpk.hex().upper()
@@ -625,6 +669,14 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_remove_notification(ctx, session, mock_result)
         elif previous_state == EsimState.WAIT_REMOVE_NOTIFICATION:
             return self._handle_remove_notification_result(ctx, session, response)
+        elif previous_state == EsimState.WAIT_CLEANUP_RESET:
+            return self._do_cleanup_open_channel(ctx, session)
+        elif previous_state == EsimState.WAIT_CLEANUP_OPEN_CHANNEL:
+            if len(response) >= 2:
+                session.data["channel"] = int(response[:2], 16)
+            return self._do_cleanup_select_isdr(ctx, session)
+        elif previous_state == EsimState.WAIT_CLEANUP_SELECT_ISDR:
+            return self._do_get_euicc_challenge(ctx, session)
         elif previous_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
             try:
@@ -661,6 +713,12 @@ class EsimIotProfileDownloadSkill(Skill):
                 return self._do_add_initial_eim(ctx, session, purpose="pre_install")
             return self._do_authenticate_server(ctx, session)
         elif previous_state == EsimState.WAIT_AUTHENTICATE_SERVER:
+            if not response:
+                return SkillResult.failed(
+                    session.session_id,
+                    "AUTHENTICATE_SERVER_NO_RESPONSE",
+                    "AuthenticateServer 未返回数据，无法继续 PrepareDownload"
+                )
             try:
                 response_bytes = bytes.fromhex(response)
                 auth_status = check_authenticate_server_response(response_bytes)
@@ -676,14 +734,19 @@ class EsimIotProfileDownloadSkill(Skill):
                 session.data["euicc_signature1"] = auth_ok["euicc_signature1"].hex().upper()
                 ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
             except Exception as e:
-                ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
+                return SkillResult.failed(
+                    session.session_id,
+                    "AUTHENTICATE_SERVER_PARSE_ERROR",
+                    f"无法解析 AuthenticateServer 响应: {e}"
+                )
             return self._do_prepare_download(ctx, session)
         elif previous_state == EsimState.WAIT_PREPARE_DOWNLOAD:
             # 解析 PrepareDownload 响应
             try:
                 response_bytes = bytes.fromhex(response)
                 pd_response = decode_prepare_download_response(response_bytes)
-                session.data["transaction_id"] = pd_response.get("transaction_id", "")
+                if pd_response.get("transaction_id"):
+                    session.data["transaction_id"] = pd_response["transaction_id"]
                 session.data["euicc_otpk"] = pd_response.get("euicc_otpk", b"").hex().upper()
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 PrepareDownload 响应: {e}")
@@ -769,8 +832,8 @@ class EsimIotProfileDownloadSkill(Skill):
     def _handle_remove_notification_result(self, ctx: SkillContext, session: SkillSession, response_hex: str) -> SkillResult:
         """校验 RemoveNotificationResponse 并继续删除下一条
 
-        通知可能因对应 Profile 已被 EuiccMemoryReset 删除而无法移除（6985），
-        这类悬空通知按“已失效”跳过，不阻断下载流程。
+        通知可能因对应 Profile 已被 EuiccMemoryReset 删除而无法移除（6985）；
+        此类失败会让 eUICC 拒绝后续 ES10 命令，必须冷复位恢复。
         """
         remove_result = -1
         if response_hex:
@@ -780,10 +843,48 @@ class EsimIotProfileDownloadSkill(Skill):
                 pass
 
         if remove_result != 0:
-            ctx.output.text(f"警告: RemoveNotification removeResult={remove_result}，跳过该通知")
+            ctx.output.text(
+                f"警告: RemoveNotification removeResult={remove_result}，冷复位恢复卡片状态"
+            )
+            return self._do_cleanup_recover(ctx, session)
 
         session.data["remove_index"] = session.data.get("remove_index", 0) + 1
         return self._do_remove_next_notification(ctx, session)
+
+    def _do_cleanup_recover(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """清理阶段失败后恢复：冷复位卡片并重新建立逻辑通道"""
+        ctx.output.text("清理恢复: 冷复位")
+        session.data["state"] = EsimState.WAIT_CLEANUP_RESET
+        session.data.pop("remove_sequences", None)
+        session.data.pop("remove_index", None)
+
+        action = Action(
+            action_id="esim.cleanup-reset",
+            type=ActionType.RESET_CARD,
+            name="冷复位(清理恢复)",
+            description="清理失败后冷复位恢复卡片状态",
+            sensitive=False
+        )
+        return SkillResult.continue_with(session.session_id, action)
+
+    def _do_cleanup_open_channel(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """恢复：重新打开逻辑通道（由卡分配通道号）"""
+        ctx.output.text("清理恢复: 打开逻辑通道")
+        session.data["state"] = EsimState.WAIT_CLEANUP_OPEN_CHANNEL
+
+        apdu = ApduBuilder.manage_channel(mode=0x00, channel=0)
+        action = self._build_apdu_action("esim.cleanup-open-channel", "打开逻辑通道", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
+    def _do_cleanup_select_isdr(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """恢复：重新选择 ISD-R"""
+        ctx.output.text("清理恢复: 选择 ISD-R")
+        session.data["state"] = EsimState.WAIT_CLEANUP_SELECT_ISDR
+
+        channel = session.data.get("channel", 1)
+        apdu = ApduBuilder.select_isdr(channel=channel)
+        action = self._build_apdu_action("esim.cleanup-select-isdr", "选择 ISD-R", apdu)
+        return SkillResult.continue_with(session.session_id, action)
 
     def _do_remove_next_notification(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """发送下一条 RemoveNotification；全部完成后进入 Profile 安装阶段"""
@@ -851,6 +952,8 @@ class EsimIotProfileDownloadSkill(Skill):
 
         # transactionId: 参考实现使用 1 字节 "01"（可通过参数覆盖）
         transaction_id = params.get("transaction_id", "01")
+        # 记录本次会话使用的 transactionId，PrepareDownload 必须复用同一个值
+        session.data["transaction_id"] = transaction_id
 
         # 获取证书数据
         dp_auth_cert = session.data.get("dp_auth_cert", "")
@@ -936,8 +1039,9 @@ class EsimIotProfileDownloadSkill(Skill):
         ctx.output.text("步骤 11: 准备下载")
         session.data["state"] = EsimState.WAIT_PREPARE_DOWNLOAD
 
-        # 从 AuthenticateServer 响应中获取 transaction_id
-        transaction_id = session.data.get("transaction_id", "00000000000000000000000000000000")
+        # transactionId 必须与 AuthenticateServer 请求中发送的一致；
+        # 用 16 字节默认值会被 eUICC 判为会话不匹配（6985）。
+        transaction_id = session.data.get("transaction_id") or "01"
 
         # 编码 SmdpSigned2
         try:
@@ -993,6 +1097,21 @@ class EsimIotProfileDownloadSkill(Skill):
                 session.session_id,
                 "ASN1_ENCODE_ERROR",
                 f"PrepareDownload 编码失败: {e}"
+            )
+
+        # 自检：BF21 声明的 TLV 长度必须与实际字节数一致，否则 eUICC 会返回 6985
+        if not download_data.startswith(b'\xbf\x21'):
+            return SkillResult.failed(
+                session.session_id,
+                "ASN1_ENCODE_ERROR",
+                "PrepareDownload 数据缺少 BF21 标签"
+            )
+        declared = _ber_total_length(download_data)
+        if declared != len(download_data):
+            return SkillResult.failed(
+                session.session_id,
+                "ASN1_ENCODE_ERROR",
+                f"PrepareDownload 长度不一致: 声明 {declared} 字节，实际 {len(download_data)} 字节"
             )
 
         channel = session.data.get("channel", 0)

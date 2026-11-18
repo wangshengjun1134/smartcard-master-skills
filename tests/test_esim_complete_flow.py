@@ -54,8 +54,9 @@ class MockCardResponses:
     
     # AuthenticateServer 响应 (BF38)
     # 简化版本，实际应包含 serverSigned2 等
+    # AuthenticateServer 成功响应 (BF38 A0)：euiccSigned1 + 5F37 euiccSignature1 + 证书
     AUTHENTICATE_SERVER_RESPONSE = {
-        "response": "BF3800",  # 空响应占位
+        "response": "BF384EA04C30038001015F3740" + "11" * 64 + "30003000",
         "sw": "9000"
     }
     
@@ -94,9 +95,13 @@ class MockCardResponses:
     }
 
 
-def drain_pending_apdus(skill, ctx, store, session, action_id: str = "esim.continue"):
-    """把分块 APDU 剩余的块用空 9000 响应逐块推进，直到状态发生变化"""
+def drain_pending_apdus(skill, ctx, store, session, action_id: str = "esim.continue", data=None):
+    """把分块 APDU 剩余的块逐块推进，直到状态发生变化
+
+    data: 每块回传的数据；非最后一块会被 Skill 忽略，最后一块才会被解析。
+    """
     result = None
+    block_data = data if data is not None else {"response": "", "sw": "9000"}
     initial_state = session.data.get("state")
     for _ in range(64):
         if session.data.get("state") != initial_state:
@@ -105,7 +110,7 @@ def drain_pending_apdus(skill, ctx, store, session, action_id: str = "esim.conti
             action_id=action_id,
             type="APDU_RESULT",
             status=ActionResultStatus.OK,
-            data={"response": "", "sw": "9000"}
+            data=block_data
         ), session)
         store.save(session, "esim.iot-profile-download")
     return result
@@ -294,7 +299,7 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, auth_result, session)
     store.save(session, "esim.iot-profile-download")
-    drain_pending_apdus(skill, ctx, store, session)
+    drain_pending_apdus(skill, ctx, store, session, data=MockCardResponses.AUTHENTICATE_SERVER_RESPONSE)
     assert session.data["state"] == EsimState.WAIT_PREPARE_DOWNLOAD
 
     # 14. PREPARE DOWNLOAD 完成 -> LOAD PROFILE PACKAGE（BF21 分块）
@@ -306,7 +311,7 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, pd_result, session)
     store.save(session, "esim.iot-profile-download")
-    drain_pending_apdus(skill, ctx, store, session)
+    drain_pending_apdus(skill, ctx, store, session, data=MockCardResponses.PREPARE_DOWNLOAD_RESPONSE)
     assert session.data["state"] == EsimState.WAIT_LOAD_PROFILE_PACKAGE
     
     # 15. LOAD PROFILE PACKAGE 完成 -> POST INSTALL RESET
@@ -318,6 +323,7 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, lpp_result, session)
     store.save(session, "esim.iot-profile-download")
+    drain_pending_apdus(skill, ctx, store, session)
     assert session.data["state"] == EsimState.WAIT_POST_INSTALL_RESET
     
     # 16. POST INSTALL RESET -> IC1
@@ -485,6 +491,71 @@ def test_apdu_generation():
 
     psmo_apdu = ApduBuilder.enable_psmo("BF5100")
     assert psmo_apdu == "80E2910003BF5100"
+
+
+def test_remove_notification_failure_triggers_recovery(test_env):
+    """RemoveNotification 失败（6985）时应冷复位并重建通道，而不是继续用被卡住的状态"""
+    skill, ctx, store = test_env
+
+    params = {
+        "operation": "install_and_enable",
+        "mode": "direct",
+        "eid": "89049032123451234512345678901235",
+        "smdp_address": "test.example.com",
+        "matching_id": "ABC12345",
+        "iccid": "8929901012345678905",
+        "profile_id": "A0000005591010FFFFFFFF8900001000",
+        "tac": "00000000"
+    }
+    init_result = skill.init(ctx, params)
+    session = store.load(init_result["sessionId"])
+
+    # 模拟已列出 1 条通知，等待删除
+    session.data["state"] = EsimState.WAIT_REMOVE_NOTIFICATION
+    session.data["remove_sequences"] = ["023F"]
+    session.data["remove_index"] = 0
+
+    # 卡片返回 6985（无 BF30 响应体）
+    result = skill.handle_action_result(ctx, ActionResult(
+        action_id="esim.remove-notification",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data={"response": "", "sw": "6985"}
+    ), session)
+    store.save(session, "esim.iot-profile-download")
+
+    assert result.next_action.type == ActionType.RESET_CARD
+    assert session.data["state"] == EsimState.WAIT_CLEANUP_RESET
+
+    # 复位完成 -> 打开通道
+    result = skill.handle_action_result(ctx, ActionResult(
+        action_id="esim.cleanup-reset",
+        type="RESET_CARD_RESULT",
+        status=ActionResultStatus.OK,
+        data={"atr": MockCardResponses.ATR}
+    ), session)
+    store.save(session, "esim.iot-profile-download")
+    assert session.data["state"] == EsimState.WAIT_CLEANUP_OPEN_CHANNEL
+
+    # 打开通道 -> SELECT ISD-R
+    result = skill.handle_action_result(ctx, ActionResult(
+        action_id="esim.cleanup-open-channel",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data={"response": "01", "sw": "9000"}
+    ), session)
+    store.save(session, "esim.iot-profile-download")
+    assert session.data["state"] == EsimState.WAIT_CLEANUP_SELECT_ISDR
+
+    # SELECT ISD-R -> GetEuiccChallenge
+    result = skill.handle_action_result(ctx, ActionResult(
+        action_id="esim.cleanup-select-isdr",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data=MockCardResponses.SELECT_ISDR_RESPONSE
+    ), session)
+    store.save(session, "esim.iot-profile-download")
+    assert session.data["state"] == EsimState.WAIT_GET_EUICC_CHALLENGE
 
 
 def test_error_handling(test_env):

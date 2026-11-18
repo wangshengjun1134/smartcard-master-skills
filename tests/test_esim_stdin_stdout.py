@@ -39,7 +39,7 @@ class MockCardResponses:
     
     # AuthenticateServer 响应 (BF38)
     AUTHENTICATE_SERVER = {
-        "response": "BF3800",
+        "response": "BF384EA04C30038001015F3740" + "11" * 64 + "30003000",
         "sw": "9000"
     }
     
@@ -417,7 +417,9 @@ def test_stdin_stdout_direct_mode():
             assert auth_response["result"]["status"] == "CONTINUE"
 
             # BF38 分块下发，逐块推进直到进入 PrepareDownload
-            auth_response = drain_chunked(proc, session_id, auth_response)
+            auth_response = drain_chunked(
+                proc, session_id, auth_response, MockCardResponses.AUTHENTICATE_SERVER
+            )
             assert auth_response["result"]["status"] == "CONTINUE"
             assert "下载" in auth_response["result"]["nextAction"]["name"]
             

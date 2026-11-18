@@ -76,7 +76,15 @@ class EsimIotProfileDownloadSkill(Skill):
     3. 后安装处理（COLDRESET → GetProfilesInfo）
     4. eIM 启用（间接模式：AddInitialEim → EnablePSMO）
     """
-    
+
+    # 这些状态下 91XX 表示有主动命令待 FETCH；其余状态的 91XX 视为命令完成
+    _PROACTIVE_STATES = frozenset({
+        EsimState.WAIT_TERMINAL_PROFILE,
+        EsimState.WAIT_TERMINAL_RESPONSE,
+        EsimState.WAIT_FETCH,
+        EsimState.WAIT_FETCH_REFRESH,
+    })
+
     def get_manifest(self) -> dict:
         return {
             "skillId": "esim.iot-profile-download",
@@ -180,22 +188,24 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_get_response(ctx, session, int(sw[2:], 16))
 
         # 处理 91XX 响应 (eUICC 异步响应)
-        # Skill 需要发送 FETCH 命令获取数据
         if sw.startswith("91") and len(sw) == 4:
-            # EuiccMemoryReset 的 91XX 属正常结束（结果已随响应返回），无需 FETCH
-            if current_state == EsimState.WAIT_EUICC_MEMORY_RESET:
-                failure = self._check_memory_reset_result(ctx, session, response)
-                if failure:
-                    return failure
-                return self._do_list_notification(ctx, session)
-            if current_state == EsimState.WAIT_FETCH:
-                # 链式 91XX：累积数据块，保留最初被打断的状态
-                session.data["pending_response"] = session.data.get("pending_response", "") + response
-            else:
-                # 保存当前状态，以便在获取完整响应后继续
-                session.data["previous_state"] = current_state
-                session.data["pending_response"] = response
-            return self._do_fetch(ctx, session, int(sw[2:], 16))
+            # 只有主动命令（TERMINAL PROFILE / TERMINAL RESPONSE 之后）才需要 FETCH；
+            # ES10 命令结束时卡也可能返回 91XX，参考实现的期望 SW 为 [9000, 91XX, 61XX]，
+            # 此时表示命令已完成，不能发 FETCH（部分卡对 FETCH 返回 6D00）。
+            if current_state in self._PROACTIVE_STATES:
+                if current_state == EsimState.WAIT_FETCH:
+                    # 链式 91XX：累积数据块，保留最初被打断的状态
+                    session.data["pending_response"] = session.data.get("pending_response", "") + response
+                else:
+                    # 保存当前状态，以便在获取完整响应后继续
+                    session.data["previous_state"] = current_state
+                    session.data["pending_response"] = response
+                return self._do_fetch(ctx, session, int(sw[2:], 16))
+
+            full_response = session.data.pop("pending_response", "") + response
+            previous_state = session.data.pop("previous_state", None)
+            resume_state = previous_state if current_state == EsimState.WAIT_GET_RESPONSE else current_state
+            return self._continue_from_state(ctx, session, resume_state, full_response, "9000")
 
         sw_parsed = ResponseParser.parse_sw(sw)
 
@@ -256,21 +266,9 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_remove_notification(ctx, session, result)
 
         elif current_state == EsimState.WAIT_REMOVE_NOTIFICATION:
-            # 校验 removeResult 后继续删除下一条（参考实现：removeResult 必须为 ok(0)）
-            response = result.data.get("response", "")
-            remove_result = -1
-            try:
-                remove_result = decode_remove_notification_result(bytes.fromhex(response))
-            except Exception:
-                pass
-            if remove_result != 0:
-                return SkillResult.failed(
-                    session.session_id,
-                    "REMOVE_NOTIFICATION_FAILED",
-                    f"RemoveNotification 失败: removeResult={remove_result} (期望 ok=0)"
-                )
-            session.data["remove_index"] = session.data.get("remove_index", 0) + 1
-            return self._do_remove_next_notification(ctx, session)
+            return self._handle_remove_notification_result(
+                ctx, session, result.data.get("response", "")
+            )
 
         elif current_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
@@ -687,19 +685,7 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_LIST_NOTIFICATION:
             return self._do_remove_notification(ctx, session, mock_result)
         elif previous_state == EsimState.WAIT_REMOVE_NOTIFICATION:
-            remove_result = -1
-            try:
-                remove_result = decode_remove_notification_result(bytes.fromhex(response))
-            except Exception:
-                pass
-            if remove_result != 0:
-                return SkillResult.failed(
-                    session.session_id,
-                    "REMOVE_NOTIFICATION_FAILED",
-                    f"RemoveNotification 失败: removeResult={remove_result} (期望 ok=0)"
-                )
-            session.data["remove_index"] = session.data.get("remove_index", 0) + 1
-            return self._do_remove_next_notification(ctx, session)
+            return self._handle_remove_notification_result(ctx, session, response)
         elif previous_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
             try:
@@ -839,6 +825,25 @@ class EsimIotProfileDownloadSkill(Skill):
 
         session.data["remove_sequences"] = sequences
         session.data["remove_index"] = 0
+        return self._do_remove_next_notification(ctx, session)
+
+    def _handle_remove_notification_result(self, ctx: SkillContext, session: SkillSession, response_hex: str) -> SkillResult:
+        """校验 RemoveNotificationResponse 并继续删除下一条
+
+        通知可能因对应 Profile 已被 EuiccMemoryReset 删除而无法移除（6985），
+        这类悬空通知按“已失效”跳过，不阻断下载流程。
+        """
+        remove_result = -1
+        if response_hex:
+            try:
+                remove_result = decode_remove_notification_result(bytes.fromhex(response_hex))
+            except Exception:
+                pass
+
+        if remove_result != 0:
+            ctx.output.text(f"警告: RemoveNotification removeResult={remove_result}，跳过该通知")
+
+        session.data["remove_index"] = session.data.get("remove_index", 0) + 1
         return self._do_remove_next_notification(ctx, session)
 
     def _do_remove_next_notification(self, ctx: SkillContext, session: SkillSession) -> SkillResult:

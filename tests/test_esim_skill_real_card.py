@@ -401,6 +401,8 @@ def run_skill_with_real_card(
                         print(f"     响应: {resp[:60]}..." if len(resp) > 60 else f"     响应: {resp}")
                         if len(resp) > 60 and resp.startswith("BF37"):
                             print(f"     ProfileInstallationResult: {resp}")
+                        if len(resp) > 60 and resp.startswith("BF2B"):
+                            print(f"     NotificationList: {resp}")
                     if "sw" in result.get("data", {}):
                         print(f"     SW: {result['data']['sw']}")
             

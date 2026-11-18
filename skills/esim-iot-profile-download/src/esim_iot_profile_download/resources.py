@@ -52,11 +52,15 @@ class ResourceManager:
             raise ResourceLoadError(f"证书文件不存在: {cert_path}")
         
         content = cert_path.read_bytes()
-        
-        # 如果是 PEM 格式，转换为 DER
+
+        # 私钥文件保持 PEM 格式（cryptography 的 load_pem_private_key 需要完整 PEM）
+        if cert_name.startswith("SK_"):
+            return content
+
+        # 证书文件如果是 PEM 格式，转换为 DER
         if cert_name.endswith(".pem"):
             content = self._pem_to_der(content)
-        
+
         return content
     
     def load_profile_package(self, iccid: str) -> str:
@@ -113,25 +117,43 @@ class ResourceManager:
             DER 格式字节
         """
         import base64
-        
-        # 移除 PEM 头部和尾部
+
+        # 解析 PEM 的所有块，优先提取 CERTIFICATE 块
         lines = pem_content.decode("utf-8").strip().split("\n")
-        
-        # 找到 BEGIN 和 END 之间的内容
-        der_lines = []
-        in_body = False
+
+        blocks = []
+        current_type = None
+        current_body = []
         for line in lines:
-            if "BEGIN" in line:
-                in_body = True
+            line = line.strip()
+            if line.startswith("-----BEGIN ") and line.endswith("-----"):
+                current_type = line[len("-----BEGIN "):-len("-----")]
+                current_body = []
                 continue
-            if "END" in line:
-                break
-            if in_body:
-                der_lines.append(line.strip())
-        
-        # Base64 解码
-        der_base64 = "".join(der_lines)
-        return base64.b64decode(der_base64)
+            if line.startswith("-----END ") and line.endswith("-----"):
+                if current_type is not None:
+                    blocks.append((current_type, "".join(current_body)))
+                current_type = None
+                current_body = []
+                continue
+            if current_type is not None and line:
+                current_body.append(line)
+
+        # 优先返回 CERTIFICATE 块，跳过 EC PARAMETERS 等
+        for block_type, body in blocks:
+            if "CERTIFICATE" in block_type:
+                return base64.b64decode(body)
+
+        # 没有 CERTIFICATE 块时，返回第一个非 EC PARAMETERS 块
+        for block_type, body in blocks:
+            if "PARAMETERS" not in block_type:
+                return base64.b64decode(body)
+
+        # 兜底：返回第一个块
+        if blocks:
+            return base64.b64decode(blocks[0][1])
+
+        raise ResourceLoadError("PEM 文件中没有可识别的数据块")
     
     def get_all_certs_info(self) -> Dict[str, Any]:
         """获取所有证书信息

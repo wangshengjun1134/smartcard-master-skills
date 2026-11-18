@@ -56,36 +56,36 @@ class ApduBuilder:
     @staticmethod
     def terminal_capability(capability_data: str = "") -> str:
         """TERMINAL CAPABILITY
-        
+
         设置终端能力，通知卡片支持的功能
         """
         cla = 0x80
         ins = 0xAA
         p1 = 0x00
         p2 = 0x00
-        
+
         if not capability_data:
-            # 默认能力数据
-            capability_data = "030000"  # 简化版本
-        
+            # 与参考实现一致：TERMINAL CAPABILITY 声明 eSIM 终端能力
+            capability_data = "A9058100830107"
+
         lc = len(capability_data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{capability_data}"
-    
+
     @staticmethod
     def terminal_profile(profile_data: str = "") -> str:
         """TERMINAL PROFILE
-        
+
         设置终端配置
         """
         cla = 0x80
         ins = 0x10
         p1 = 0x00
         p2 = 0x00
-        
+
         if not profile_data:
-            # 默认配置数据
-            profile_data = "030000"
-        
+            # 与参考实现一致：完整 TERMINAL PROFILE（含 eSIM/ISIM 等能力位）
+            profile_data = "FFFFFFFF7F9D00DFBF00001FE2000000C7EB000000016800500000000000000200"
+
         lc = len(profile_data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{profile_data}"
     

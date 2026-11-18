@@ -473,7 +473,7 @@ class TestEsimSkillWithRealCard:
                 "operation": "install_and_enable",
                 "mode": "direct",
                 "eid": "89049032123451234512345678901235",
-                "smdp_address": "test.example.com",
+                "smdp_address": "testsmdpplus1.example.com",
                 "matching_id": "ABC12345",
                 "iccid": "8929901012345678905F",
                 "profile_id": "A0000005591010FFFFFFFF8900001000",

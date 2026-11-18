@@ -51,6 +51,47 @@ def _der_tlv(tag_bytes: bytes, value: bytes) -> bytes:
 
 # ========== BF38 AuthenticateServerRequest ==========
 
+def encode_server_signed1(
+    transaction_id: bytes,
+    euicc_challenge: bytes,
+    server_address: str,
+    server_challenge: bytes
+) -> bytes:
+    """编码 ServerSigned1 SEQUENCE
+
+    结构 (SGP.22 5.7.5):
+    ServerSigned1 ::= SEQUENCE {
+        transactionId   [0] TransactionId,
+        euiccChallenge  [1] Octet16,
+        serverAddress   [3] UTF8String,
+        serverChallenge [4] Octet16
+    }
+
+    Args:
+        transaction_id: 16 字节事务 ID
+        euicc_challenge: 16 字节 eUICC 挑战值
+        server_address: SM-DP+ 地址
+        server_challenge: 16 字节服务器挑战值
+
+    Returns:
+        DER 编码的 ServerSigned1 (SEQUENCE)
+    """
+    if not transaction_id or len(transaction_id) > 16:
+        raise Asn1CodecError(f"transactionId must be 1..16 bytes, got {len(transaction_id)}")
+    if len(euicc_challenge) != 16:
+        raise Asn1CodecError(f"euiccChallenge must be 16 bytes, got {len(euicc_challenge)}")
+    if len(server_challenge) != 16:
+        raise Asn1CodecError(f"serverChallenge must be 16 bytes, got {len(server_challenge)}")
+
+    content = (
+        _der_tlv(b'\x80', transaction_id)
+        + _der_tlv(b'\x81', euicc_challenge)
+        + _der_tlv(b'\x83', server_address.encode('utf-8'))
+        + _der_tlv(b'\x84', server_challenge)
+    )
+    return _der_tlv(b'\x30', content)
+
+
 def encode_bf38_authenticate_server_request(
     server_signed1: bytes,
     server_signature1: bytes,
@@ -78,20 +119,20 @@ def encode_bf38_authenticate_server_request(
         b'\x02\x00\x00', b'\x02\x00\x00', b'\x09\x00\x00', b'\x02\x01\x00',
     ]
     caps_seq = b''.join(_der_tlv(bytes([0x80 | i]), c) for i, c in enumerate(caps))
-    
-    # deviceInfo: [0] tac, [1] deviceCapabilities, [2] deviceIdentifier
+
+    # deviceInfo: [0] tac, [1] deviceCapabilities
+    # 注意：不包含 deviceIdentifier [2]（IMEI 为 Octet32，默认省略）
     device = (
         _der_tlv(b'\x80', tac)
         + _der_tlv(b'\xa1', caps_seq)
-        + _der_tlv(b'\x82', bytes([0, 0, 0, 0, 0x11, 0x11, 0x11, 0x11]))
     )
-    
+
     # context: [0] matchingId, [1] deviceInfo
     context = b''
     if matching_id:
         context += _der_tlv(b'\x80', matching_id.encode('utf-8'))
     context += _der_tlv(b'\xa1', device)
-    
+
     ctx_params1 = _der_tlv(b'\xa0', context)
     
     fields = (
@@ -310,53 +351,58 @@ def decode_prepare_download_response(response: bytes) -> Dict[str, Any]:
 def decode_euicc_info1(response: bytes) -> Dict[str, Any]:
     """
     解码 EuiccInfo1 (BF20 响应)
-    
+
     提取:
     - svn: 版本号
-    - verification_ci_pk_ids: 验证 CI 公钥 ID 列表
+    - verification_ci_pk_ids: 验证 CI 公钥 ID 列表（20 字节 SKI）
     - signing_ci_pk_ids: 签名 CI 公钥 ID 列表
+
+    EuiccInfo1 ::= [APPLICATION 32] SEQUENCE {
+        svn [2] VersionType,
+        euiccCiPKIdListForVerification [9] SEQUENCE OF SubjectKeyIdentifier,
+        euiccCiPKIdListForSigning [10] SEQUENCE OF SubjectKeyIdentifier OPTIONAL
+    }
     """
     result = {}
     if len(response) < 4:
         raise Asn1CodecError("Response too short")
-    
-    # 跳过 BF20 tag 和 length
+
+    def read_len(buf, pos):
+        lb = buf[pos]
+        pos += 1
+        if lb & 0x80:
+            n = lb & 0x7F
+            val = int.from_bytes(buf[pos:pos + n], 'big')
+            return val, pos + n
+        return lb, pos
+
+    # 跳过 BF20 tag (2 字节) 和外层长度
     offset = 2
-    if offset >= len(response):
-        return result
-    
-    data = response[offset:]
-    
-    # 解析 [2] version
-    if len(data) > 1 and data[0] == 0x82:
-        offset = 1
-        ver_len = data[offset]
+    _, offset = read_len(response, offset)
+
+    while offset < len(response):
+        tag = response[offset]
         offset += 1
-        if offset + ver_len <= len(data):
-            result['svn'] = data[offset:offset + ver_len].decode('utf-8', errors='ignore')
-            offset += ver_len
-    else:
-        offset = 1
-    
-    # 解析 [9] verificationCiPkIds
-    if offset < len(data) and data[offset] == 0x89:
-        offset += 1
-        if offset < len(data):
-            ver_len = data[offset]
-            offset += 1
-            ver_data = data[offset:offset + ver_len]
-            result['verification_ci_pk_ids'] = _parse_octet_string_set(ver_data)
-            offset += ver_len
-    
-    # 解析 [10] signingCiPkIds
-    if offset < len(data) and data[offset] == 0x8A:
-        offset += 1
-        if offset < len(data):
-            sign_len = data[offset]
-            offset += 1
-            sign_data = data[offset:offset + sign_len]
-            result['signing_ci_pk_ids'] = _parse_octet_string_set(sign_data)
-    
+        # 多字节 tag（如 9F xx）
+        if (tag & 0x1F) == 0x1F:
+            while offset < len(response):
+                b = response[offset]
+                offset += 1
+                if not (b & 0x80):
+                    break
+        if offset >= len(response):
+            break
+        length, offset = read_len(response, offset)
+        value = response[offset:offset + length]
+        offset += length
+
+        if tag == 0x82:  # [2] svn
+            result['svn'] = value.hex().upper()
+        elif tag in (0xA9, 0x89):  # [9] euiccCiPKIdListForVerification
+            result['verification_ci_pk_ids'] = _parse_octet_string_set(value)
+        elif tag in (0xAA, 0x8A):  # [10] euiccCiPKIdListForSigning
+            result['signing_ci_pk_ids'] = _parse_octet_string_set(value)
+
     return result
 
 

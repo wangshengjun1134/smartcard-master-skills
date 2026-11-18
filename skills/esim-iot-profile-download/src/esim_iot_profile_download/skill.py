@@ -10,6 +10,7 @@ from smartcard_skill_sdk import (
 from .state_machine import EsimState, STATE_TRANSITIONS, INDIRECT_MODE_TRANSITIONS
 from .apdu_builder import ApduBuilder, ResponseParser
 from .asn1_codec import (
+    encode_server_signed1,
     encode_bf38_authenticate_server_request,
     encode_smdp_signed2,
     encode_bf21_prepare_download_request,
@@ -25,9 +26,20 @@ from .asn1_codec import (
 from .resources import ResourceManager, CertificateManager, ProfileManager, ResourceLoadError
 
 
+def _load_ec_private_key(key_bytes: bytes):
+    """加载 EC 私钥，支持 PEM 和 DER 格式"""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.backends import default_backend
+
+    if key_bytes.startswith(b"-----BEGIN"):
+        return serialization.load_pem_private_key(key_bytes, password=None, backend=default_backend())
+    return serialization.load_der_private_key(key_bytes, password=None, backend=default_backend())
+
+
 class EsimIotProfileDownloadSkill(Skill):
     """eSIM IoT Profile Download Skill
-    
+
     核心流程：
     1. 初始化与准备（COLDRESET → SELECT ISD-R）
     2. Profile 安装（AuthenticateServer → LoadProfilePackage）
@@ -195,24 +207,11 @@ class EsimIotProfileDownloadSkill(Skill):
 
         elif current_state == EsimState.WAIT_REMOVE_NOTIFICATION:
             # RemoveNotification 完成后，进入 Profile 安装阶段
-            return self._do_get_euicc_info(ctx, session)
-
-        elif current_state == EsimState.WAIT_GET_EUICC_INFO:
-            # 解析 eUICC 信息
-            response = result.data.get("response", "")
-            try:
-                response_bytes = bytes.fromhex(response)
-                euicc_info = decode_euicc_info1(response_bytes)
-                session.data["euicc_info"] = euicc_info
-                # 保存 euiccCiPkId 供后续认证使用
-                if "verification_ci_pk_ids" in euicc_info and euicc_info["verification_ci_pk_ids"]:
-                    session.data["euicc_ci_pk_id"] = euicc_info["verification_ci_pk_ids"][0]
-            except Exception as e:
-                ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
+            # 顺序与参考实现一致：先 GetEuiccChallenge（BF2E），再 GetEuiccInfo1（BF20）
             return self._do_get_euicc_challenge(ctx, session)
 
         elif current_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
-            # 保存挑战值
+            # 保存挑战值，然后获取 EuiccInfo1
             response = result.data.get("response", "")
             try:
                 response_bytes = bytes.fromhex(response)
@@ -221,6 +220,31 @@ class EsimIotProfileDownloadSkill(Skill):
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 Challenge: {e}")
                 session.data["challenge"] = response
+            return self._do_get_euicc_info(ctx, session)
+
+        elif current_state == EsimState.WAIT_GET_EUICC_INFO:
+            # 解析 eUICC 信息
+            response = result.data.get("response", "")
+            try:
+                response_bytes = bytes.fromhex(response)
+                euicc_info = decode_euicc_info1(response_bytes)
+                # 转为可 JSON 序列化的格式（bytes -> hex 字符串）
+                serializable_info = {}
+                for k, v in euicc_info.items():
+                    if isinstance(v, list):
+                        serializable_info[k] = [item.hex().upper() if isinstance(item, bytes) else item for item in v]
+                    elif isinstance(v, bytes):
+                        serializable_info[k] = v.hex().upper()
+                    else:
+                        serializable_info[k] = v
+                session.data["euicc_info"] = serializable_info
+                # 保存 euiccCiPkId（hex 字符串）供后续认证使用
+                ver_ids = euicc_info.get("verification_ci_pk_ids") or []
+                if ver_ids:
+                    session.data["euicc_ci_pk_id"] = ver_ids[0].hex().upper()
+                    ctx.output.text(f"提取 euiccCiPKId: {ver_ids[0].hex().upper()}")
+            except Exception as e:
+                ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
             return self._do_authenticate_server(ctx, session)
 
         elif current_state == EsimState.WAIT_AUTHENTICATE_SERVER:
@@ -561,20 +585,10 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_LIST_NOTIFICATION:
             return self._do_remove_notification(ctx, session, mock_result)
         elif previous_state == EsimState.WAIT_REMOVE_NOTIFICATION:
-            return self._do_get_euicc_info(ctx, session)
-        elif previous_state == EsimState.WAIT_GET_EUICC_INFO:
-            # 解析 eUICC 信息
-            try:
-                response_bytes = bytes.fromhex(response)
-                euicc_info = decode_euicc_info1(response_bytes)
-                session.data["euicc_info"] = euicc_info
-                if "verification_ci_pk_ids" in euicc_info and euicc_info["verification_ci_pk_ids"]:
-                    session.data["euicc_ci_pk_id"] = euicc_info["verification_ci_pk_ids"][0]
-            except Exception as e:
-                ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
+            # 顺序与参考实现一致：先 BF2E，再 BF20
             return self._do_get_euicc_challenge(ctx, session)
         elif previous_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
-            # 保存挑战值
+            # 保存挑战值，然后获取 EuiccInfo1
             try:
                 response_bytes = bytes.fromhex(response)
                 challenge = decode_bf2e_challenge(response_bytes)
@@ -582,6 +596,28 @@ class EsimIotProfileDownloadSkill(Skill):
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 Challenge: {e}")
                 session.data["challenge"] = response
+            return self._do_get_euicc_info(ctx, session)
+        elif previous_state == EsimState.WAIT_GET_EUICC_INFO:
+            # 解析 eUICC 信息
+            try:
+                response_bytes = bytes.fromhex(response)
+                euicc_info = decode_euicc_info1(response_bytes)
+                # 转为可 JSON 序列化的格式（bytes -> hex 字符串）
+                serializable_info = {}
+                for k, v in euicc_info.items():
+                    if isinstance(v, list):
+                        serializable_info[k] = [item.hex().upper() if isinstance(item, bytes) else item for item in v]
+                    elif isinstance(v, bytes):
+                        serializable_info[k] = v.hex().upper()
+                    else:
+                        serializable_info[k] = v
+                session.data["euicc_info"] = serializable_info
+                ver_ids = euicc_info.get("verification_ci_pk_ids") or []
+                if ver_ids:
+                    session.data["euicc_ci_pk_id"] = ver_ids[0].hex().upper()
+                    ctx.output.text(f"提取 euiccCiPKId: {ver_ids[0].hex().upper()}")
+            except Exception as e:
+                ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
             return self._do_authenticate_server(ctx, session)
         elif previous_state == EsimState.WAIT_AUTHENTICATE_SERVER:
             return self._do_prepare_download(ctx, session)
@@ -704,46 +740,60 @@ class EsimIotProfileDownloadSkill(Skill):
         matching_id = params.get("matching_id", "")
         tac = bytes.fromhex(params.get("tac", "00000000"))
 
-        # 从挑战值生成 transaction_id
-        challenge = session.data.get("challenge", "")
-        transaction_id = challenge[:32] if len(challenge) >= 32 else challenge.ljust(32, "0")
+        # eUICC 挑战值（16 字节）
+        challenge_hex = session.data.get("challenge", "")
+        try:
+            euicc_challenge = bytes.fromhex(challenge_hex)[:16].ljust(16, b'\x00')
+        except Exception:
+            euicc_challenge = bytes(16)
+
+        # transactionId: 参考实现使用 1 字节 "01"（可通过参数覆盖）
+        transaction_id = params.get("transaction_id", "01")
 
         # 获取证书数据
         dp_auth_cert = session.data.get("dp_auth_cert", "")
         dp_auth_key_hex = session.data.get("dp_auth_key", "")
         euicc_ci_pk_id = session.data.get("euicc_ci_pk_id", "0102030405060708")
 
-        # 使用真实私钥签名
+        # SM-DP+ 地址和服务器挑战值（参考实现使用随机 16 字节）
+        server_address = params.get("smdp_address", "testsmdpplus1.example.com")
+        import os as _os
+        server_challenge = _os.urandom(16)
+
+        # 构造 ServerSigned1 SEQUENCE
+        try:
+            server_signed1 = encode_server_signed1(
+                transaction_id=bytes.fromhex(transaction_id),
+                euicc_challenge=euicc_challenge,
+                server_address=server_address,
+                server_challenge=server_challenge
+            )
+        except Asn1CodecError as e:
+            return SkillResult.failed(
+                session.session_id,
+                "ASN1_ENCODE_ERROR",
+                f"ServerSigned1 编码失败: {e}"
+            )
+
+        # 使用真实私钥对 ServerSigned1 签名
         server_signature1 = b""
         try:
             if dp_auth_key_hex:
                 from cryptography.hazmat.primitives import hashes
                 from cryptography.hazmat.primitives.asymmetric import ec
-                from cryptography.hazmat.backends import default_backend
-                
-                # 加载私钥
+
+                # 加载私钥（支持 PEM 和 DER 格式）
                 private_key_bytes = bytes.fromhex(dp_auth_key_hex)
-                private_key = ec.derive_private_key(
-                    int.from_bytes(private_key_bytes, 'big'),
-                    ec.SECP256R1(),
-                    default_backend()
-                )
-                
-                # 签名数据 = transaction_id + challenge
-                sign_data = bytes.fromhex(transaction_id + challenge)
-                
-                # 使用 ECDSA + SHA256 签名
-                signature = private_key.sign(sign_data, ec.ECDSA(hashes.SHA256()))
+                private_key = _load_ec_private_key(private_key_bytes)
+
+                # 对完整的 ServerSigned1 DER 数据签名
+                signature = private_key.sign(server_signed1, ec.ECDSA(hashes.SHA256()))
                 server_signature1 = signature
-                
+
                 ctx.output.text(f"签名成功，签名长度: {len(signature)} 字节")
         except Exception as e:
             ctx.output.text(f"警告: 签名失败，使用占位数据 - {e}")
             server_signature1 = bytes(64)  # 占位签名
-
-        # 构造 server_signed1 (简化版本，实际应包含更多字段)
-        # 这里使用 transaction_id 作为 signed1 的主要内容
-        server_signed1 = bytes.fromhex(transaction_id)
 
         # 服务器证书
         server_certificate = bytes.fromhex(dp_auth_cert) if dp_auth_cert else b""
@@ -806,20 +856,15 @@ class EsimIotProfileDownloadSkill(Skill):
             if dp_pb_key_hex:
                 from cryptography.hazmat.primitives import hashes
                 from cryptography.hazmat.primitives.asymmetric import ec
-                from cryptography.hazmat.backends import default_backend
-                
-                # 加载私钥
+
+                # 加载私钥（支持 PEM 和 DER 格式）
                 private_key_bytes = bytes.fromhex(dp_pb_key_hex)
-                private_key = ec.derive_private_key(
-                    int.from_bytes(private_key_bytes, 'big'),
-                    ec.SECP256R1(),
-                    default_backend()
-                )
-                
+                private_key = _load_ec_private_key(private_key_bytes)
+
                 # 签名数据 = smdp_signed2
                 signature = private_key.sign(smdp_signed2, ec.ECDSA(hashes.SHA256()))
                 smdp_signature2 = signature
-                
+
                 ctx.output.text(f"PrepareDownload 签名成功，签名长度: {len(signature)} 字节")
         except Exception as e:
             ctx.output.text(f"警告: PrepareDownload 签名失败，使用占位数据 - {e}")

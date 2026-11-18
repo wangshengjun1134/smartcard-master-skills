@@ -684,10 +684,10 @@ class EsimIotProfileDownloadSkill(Skill):
         # 解析 ListNotification 响应，获取通知序号
         response = result.data.get("response", "")
 
-        # 如果没有通知，直接跳过
+        # 如果没有通知，直接跳过（保持参考实现顺序：先 GetEuiccChallenge）
         if not response or response == "":
             ctx.output.text("无待处理通知")
-            return self._do_get_euicc_info(ctx, session)
+            return self._do_get_euicc_challenge(ctx, session)
 
         # 解析通知序号（简化处理，实际应解析 ASN.1）
         # 假设响应格式为 BF28048002XXXX，其中 XXXX 是序号

@@ -146,6 +146,94 @@ def encode_bf38_authenticate_server_request(
     return _der_tlv(b'\xbf\x38', fields)
 
 
+_AUTH_ERROR_NAMES = {
+    1: "invalidCertificate",
+    2: "invalidSignature",
+    3: "unsupportedCurve",
+    4: "noSessionContext",
+    5: "invalidOid",
+    6: "euiccChallengeMismatch",
+    7: "ciPKUnknown",
+    127: "undefinedError",
+}
+
+
+def check_authenticate_server_response(response: bytes) -> Dict[str, Any]:
+    """检查 AuthenticateServer (BF38) 响应是成功还是错误
+
+    结构：
+    BF38 { A0 ... } = authenticateResponseOk
+    BF38 { A1 [SEQUENCE { [0] transactionId, errorCode }] } = authenticateResponseError
+
+    Returns:
+        {"ok": bool, "error_code": int, "error_name": str, "transaction_id": str}
+    """
+    result = {"ok": False, "error_code": None, "error_name": "", "transaction_id": ""}
+    if not response or len(response) < 4:
+        result["error_name"] = "empty response"
+        return result
+
+    offset = 0
+    if response[offset] == 0xBF and response[offset + 1] == 0x38:
+        offset += 2
+    else:
+        result["error_name"] = "not BF38"
+        return result
+
+    # 跳过长度
+    if offset >= len(response):
+        return result
+    lb = response[offset]
+    offset += 1
+    if lb & 0x80:
+        offset += (lb & 0x7F)
+
+    if offset >= len(response):
+        return result
+
+    branch = response[offset]
+    if branch != 0xA1:
+        # A0 或其他 = 成功分支
+        result["ok"] = True
+        return result
+
+    # A1 错误容器
+    offset += 1
+    if offset >= len(response):
+        result["error_name"] = "truncated error"
+        return result
+    lb = response[offset]
+    offset += 1
+    if lb & 0x80:
+        offset += (lb & 0x7F)
+
+    # 解析内部 [0] transactionId 和 INTEGER errorCode
+    while offset < len(response):
+        tag = response[offset]
+        offset += 1
+        if offset >= len(response):
+            break
+        lb = response[offset]
+        offset += 1
+        if lb & 0x80:
+            n = lb & 0x7F
+            length = int.from_bytes(response[offset:offset + n], 'big')
+            offset += n
+        else:
+            length = lb
+        value = response[offset:offset + length]
+        offset += length
+
+        if tag == 0x80:
+            result["transaction_id"] = value.hex().upper()
+        elif tag == 0x02 and value:
+            code = int.from_bytes(value, 'big')
+            result["error_code"] = code
+            result["error_name"] = _AUTH_ERROR_NAMES.get(code, f"unknown({code})")
+
+    return result
+
+
 # ========== SmdpSigned2 ==========
 
 def encode_smdp_signed2(

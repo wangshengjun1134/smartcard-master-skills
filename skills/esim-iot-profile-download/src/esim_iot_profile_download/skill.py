@@ -12,6 +12,7 @@ from .apdu_builder import ApduBuilder, ResponseParser
 from .asn1_codec import (
     encode_server_signed1,
     encode_bf38_authenticate_server_request,
+    check_authenticate_server_response,
     encode_smdp_signed2,
     encode_bf21_prepare_download_request,
     decode_prepare_download_response,
@@ -261,29 +262,17 @@ class EsimIotProfileDownloadSkill(Skill):
             response = result.data.get("response", "")
             if response:
                 try:
-                    # AuthenticateServer 响应格式: BF38 [length] { [0] transactionId, ... }
                     response_bytes = bytes.fromhex(response)
-                    offset = 0
-                    
-                    # 跳过 BF38 tag
-                    if response_bytes[offset] == 0xBF and response_bytes[offset + 1] == 0x38:
-                        offset += 2
-                    
-                    # 跳过 length
-                    length_byte = response_bytes[offset]
-                    offset += 1
-                    if length_byte & 0x80:
-                        num_bytes = length_byte & 0x7F
-                        offset += num_bytes
-                    
-                    # 查找 [0] transactionId
-                    if offset < len(response_bytes) and response_bytes[offset] == 0x80:
-                        offset += 1
-                        tid_len = response_bytes[offset]
-                        offset += 1
-                        transaction_id = response_bytes[offset:offset + tid_len].hex().upper()
-                        session.data["transaction_id"] = transaction_id
-                        ctx.output.text(f"从 AuthenticateServer 响应中提取 transaction_id: {transaction_id[:16]}...")
+                    auth_status = check_authenticate_server_response(response_bytes)
+                    if not auth_status["ok"]:
+                        return SkillResult.failed(
+                            session.session_id,
+                            "AUTHENTICATE_SERVER_FAILED",
+                            f"卡片拒绝认证: errorCode={auth_status['error_code']} "
+                            f"({auth_status['error_name']})"
+                        )
+                    session.data["transaction_id"] = auth_status.get("transaction_id") or "01"
+                    ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
                 except Exception as e:
                     ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
             return self._do_prepare_download(ctx, session)
@@ -620,6 +609,19 @@ class EsimIotProfileDownloadSkill(Skill):
                 ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
             return self._do_authenticate_server(ctx, session)
         elif previous_state == EsimState.WAIT_AUTHENTICATE_SERVER:
+            try:
+                auth_status = check_authenticate_server_response(bytes.fromhex(response))
+                if not auth_status["ok"]:
+                    return SkillResult.failed(
+                        session.session_id,
+                        "AUTHENTICATE_SERVER_FAILED",
+                        f"卡片拒绝认证: errorCode={auth_status['error_code']} "
+                        f"({auth_status['error_name']})"
+                    )
+                session.data["transaction_id"] = auth_status.get("transaction_id") or "01"
+                ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
+            except Exception as e:
+                ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
             return self._do_prepare_download(ctx, session)
         elif previous_state == EsimState.WAIT_PREPARE_DOWNLOAD:
             # 解析 PrepareDownload 响应
@@ -926,12 +928,14 @@ class EsimIotProfileDownloadSkill(Skill):
         
         # 获取 eUICC OTPK (从 PrepareDownload 响应中获取)
         euicc_otpk_hex = session.data.get("euicc_otpk", "")
-        if euicc_otpk_hex:
-            euicc_otpk = bytes.fromhex(euicc_otpk_hex)
-        else:
-            # 使用默认的 OTPK (测试用)
-            euicc_otpk = bytes(65)
-            ctx.output.text("警告: 未获取到 eUICC OTPK，使用默认值")
+        if not euicc_otpk_hex or len(euicc_otpk_hex) != 130 or euicc_otpk_hex.startswith("00" * 65):
+            # 没有有效的 eUICC OTPK 无法生成合规 BPP，不能发送全零占位数据
+            return SkillResult.failed(
+                session.session_id,
+                "EUICC_OTPK_MISSING",
+                "缺少有效的 eUICC OTPK（PrepareDownload 未成功），无法生成 Bound Profile Package"
+            )
+        euicc_otpk = bytes.fromhex(euicc_otpk_hex)
 
         # 获取 DP+ Profile Binding 证书和私钥
         dp_pb_cert = session.data.get("dp_pb_cert", "")

@@ -455,7 +455,7 @@ class TestEsimSkillWithRealCard:
                 "eid": "89049032123451234512345678901235",
                 "smdp_address": "test.example.com",
                 "matching_id": "ABC12345",
-                "iccid": "8929901012345678905",
+                "iccid": "8929901012345678905F",
                 "profile_id": "A0000005591010FFFFFFFF8900001000",
                 "tac": "00000000"
             },
@@ -475,7 +475,7 @@ class TestEsimSkillWithRealCard:
                 "eid": "89049032123451234512345678901235",
                 "smdp_address": "test.example.com",
                 "matching_id": "ABC12345",
-                "iccid": "8929901012345678905",
+                "iccid": "8929901012345678905F",
                 "profile_id": "A0000005591010FFFFFFFF8900001000",
                 "tac": "00000000"
             },
@@ -490,7 +490,7 @@ class TestEsimSkillWithRealCard:
 if __name__ == "__main__":
     # 直接运行时执行完整测试
     print("=== eSIM IoT Profile Download Skill 连卡测试 ===\n")
-    
+
     result = run_skill_with_real_card(
         skill_input={
             "operation": "install_and_enable",
@@ -498,12 +498,12 @@ if __name__ == "__main__":
             "eid": "89049032123451234512345678901235",
             "smdp_address": "test.example.com",
             "matching_id": "ABC12345",
-            "iccid": "8929901012345678905",
+            "iccid": "8929901012345678905F",
             "profile_id": "A0000005591010FFFFFFFF8900001000",
             "tac": "00000000"
         },
         max_steps=50,
         verbose=True
     )
-    
+
     print(f"\n最终状态: {result['status']}")

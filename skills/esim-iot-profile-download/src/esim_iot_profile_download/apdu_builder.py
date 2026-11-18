@@ -231,50 +231,221 @@ class ApduBuilder:
         return [f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"]
 
     @staticmethod
-    def load_profile_package(package_data: str, block_number: int = 0, is_last: bool = False, channel: int = 0) -> list:
+    def load_profile_package(package_data: str, channel: int = 0) -> list:
         """LoadProfilePackage (BF36)
 
-        加载 Profile 包
+        加载 Profile 包 - 按照 BPP 的 ASN.1 结构分块
         
-        格式: (80+channel) E2 11 00 Lc [BF 36 + 长度 + package_data]
-        注意：package_data 是原始 Profile 包内容，需要添加 BF36 标签
+        根据 SGP.22 规范，BPP 需要按照 ASN.1 结构分割成多个 STORE DATA 对象：
+        - BF23 (initialiseSecureChannelRequest) - 第 1 个对象
+        - A0 (firstSequenceOf87) - 第 2 个对象（包含第一个 87 TLV）
+        - 每个 87 TLV 是独立的对象
+        - A1 (sequenceOf88) - 头部是一个对象
+        - 每个 88 TLV 是独立的对象
+        - A3 (sequenceOf86) - 头部是一个对象
+        - 每个 86 TLV 是独立的对象
         
-        返回: APDU 列表（如果数据超过 255 字节，会分块）
+        每个对象的块编号从 0 开始。
 
         Args:
             package_data: Profile 包数据（原始内容，不包含 BF36 标签）
-            block_number: 块号（从 0 开始）- 注：当前实现未使用
-            is_last: 是否为最后一块 - 注：当前实现未使用
             channel: 逻辑通道号 (0-3)
-            
+
         Returns:
             APDU 列表（十六进制字符串）
         """
         # CLA = 0x80 + 通道号 (ES10 命令格式)
         cla = 0x80 + (channel & 0x03)
         ins = 0xE2  # ES10 命令
-        p1 = 0x11   # 固定参数
-        p2 = 0x00
 
         # package_data 是原始内容，需要添加 BF36 标签和长度
         package_data_len = len(package_data) // 2
-        
-        # 构造 BER-TLV 格式的长度
+
+        # 构造完整的 BF36 数据
         if package_data_len > 255:
             # 长格式: 82 XX XX (2字节长度)
-            data = f"BF3682{package_data_len:04X}{package_data}"
+            bpp_data = f"BF3682{package_data_len:04X}{package_data}"
         elif package_data_len > 127:
             # 长格式: 81 XX (1字节长度)
-            data = f"BF3681{package_data_len:02X}{package_data}"
+            bpp_data = f"BF3681{package_data_len:02X}{package_data}"
         else:
             # 短格式
-            data = f"BF36{package_data_len:02X}{package_data}"
+            bpp_data = f"BF36{package_data_len:02X}{package_data}"
 
-        lc = len(data) // 2
-        if lc > 255:
-            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, data)
+        # 解析 BPP 结构并分割成 STORE DATA 对象
+        store_data_objects = ApduBuilder._parse_bpp_structure(bpp_data)
         
-        return [f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"]
+        # 为每个 STORE DATA 对象生成 APDU 列表
+        apdus = []
+        for obj_data in store_data_objects:
+            obj_apdus = ApduBuilder._build_store_data_apdus(cla, ins, obj_data)
+            apdus.extend(obj_apdus)
+        
+        return apdus
+
+    @staticmethod
+    def _parse_bpp_structure(bpp_data: str) -> list:
+        """解析 BPP 结构，分割成 STORE DATA 对象
+        
+        BPP 结构:
+        BF36 (外层)
+          BF23 (initialiseSecureChannelRequest)
+          A0 (firstSequenceOf87) - 包含 87 TLVs
+          A1 (sequenceOf88) - 包含 88 TLVs
+          A2 (secondSequenceOf87) - 可选
+          A3 (sequenceOf86) - 包含 86 TLVs
+        """
+        # 解析外层 BF36
+        offset = 0
+        tag = bpp_data[offset:offset+4]
+        if tag != "BF36":
+            # 如果不是 BF36 开头，直接返回整个数据作为一个对象
+            return [bpp_data]
+        
+        offset += 4
+        
+        # 读取长度
+        len_byte = int(bpp_data[offset:offset+2], 16)
+        offset += 2
+        if len_byte & 0x80:
+            num_bytes = len_byte & 0x7F
+            offset += num_bytes * 2
+        
+        # 外层头部长度
+        header_len = offset
+        
+        # 解析内部字段
+        objects = []
+        fields = ApduBuilder._decode_ber_tlv_sequence(bpp_data[offset:])
+        
+        if not fields or fields[0][0] != "BF23":
+            # 如果没有 BF23 开头，返回整个数据
+            return [bpp_data]
+        
+        # 第一个对象: BF36 头部 + BF23
+        first_field = fields[0]
+        first_obj = bpp_data[:header_len] + first_field[0] + first_field[1]
+        objects.append(first_obj)
+        
+        # 处理后续字段
+        for i in range(1, len(fields)):
+            field_tag, field_value = fields[i]
+            
+            if field_tag in ["A0", "A2"]:
+                # firstSequenceOf87 或 secondSequenceOf87
+                # 头部 + 第一个 87 TLV 作为一个对象
+                children = ApduBuilder._decode_ber_tlv_sequence(field_value)
+                if children:
+                    # 计算头部长度
+                    field_encoded = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value
+                    header = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2)
+                    # 头部 + 第一个子字段
+                    first_child = children[0][0] + children[0][1]
+                    objects.append(header + first_child)
+                    # 后续子字段各自作为独立对象
+                    for j in range(1, len(children)):
+                        objects.append(children[j][0] + children[j][1])
+                else:
+                    objects.append(field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value)
+            
+            elif field_tag in ["A1", "A3"]:
+                # sequenceOf88 或 sequenceOf86
+                # 头部作为一个对象，每个子字段各自作为独立对象
+                header = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2)
+                objects.append(header)
+                children = ApduBuilder._decode_ber_tlv_sequence(field_value)
+                for child in children:
+                    objects.append(child[0] + child[1])
+            
+            else:
+                # 其他字段直接作为一个对象
+                objects.append(field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value)
+        
+        return objects
+
+    @staticmethod
+    def _decode_ber_tlv_sequence(data: str) -> list:
+        """解码 BER-TLV 序列，返回 [(tag, value), ...]"""
+        result = []
+        offset = 0
+        while offset < len(data):
+            # 读取标签
+            tag_start = offset
+            tag_byte = int(data[offset:offset+2], 16)
+            offset += 2
+            if (tag_byte & 0x1F) == 0x1F:
+                # 多字节标签
+                while offset < len(data):
+                    next_byte = int(data[offset:offset+2], 16)
+                    offset += 2
+                    if (next_byte & 0x80) == 0:
+                        break
+            tag = data[tag_start:offset]
+            
+            # 读取长度
+            if offset >= len(data):
+                break
+            len_byte = int(data[offset:offset+2], 16)
+            offset += 2
+            if len_byte & 0x80:
+                num_bytes = len_byte & 0x7F
+                length = int(data[offset:offset+num_bytes*2], 16)
+                offset += num_bytes * 2
+            else:
+                length = len_byte
+            
+            # 读取值
+            value = data[offset:offset+length*2]
+            offset += length * 2
+            
+            result.append((tag, value))
+        
+        return result
+
+    @staticmethod
+    def _encode_ber_len(length: int) -> str:
+        """编码 BER 长度"""
+        if length < 128:
+            return f"{length:02X}"
+        elif length < 256:
+            return f"81{length:02X}"
+        else:
+            return f"82{length:04X}"
+
+    @staticmethod
+    def _build_store_data_apdus(cla: int, ins: int, data: str) -> list:
+        """为一个 STORE DATA 对象构建 APDU 列表
+        
+        每个对象的块编号从 0 开始。
+        """
+        apdus = []
+        max_block_size = 255  # 每块最大 255 字节
+        data_len = len(data) // 2
+        
+        if data_len <= max_block_size:
+            # 数据不超过 255 字节，直接发送
+            lc = data_len
+            apdus.append(f"{cla:02X}{ins:02X}91{0:02X}{lc:02X}{data}")
+        else:
+            # 数据超过 255 字节，需要分块
+            offset = 0
+            block_num = 0
+            while offset < len(data):
+                block = data[offset:offset+max_block_size*2]
+                lc = len(block) // 2
+                offset += max_block_size * 2
+                
+                if offset >= len(data):
+                    # 最后一块
+                    p1 = 0x91
+                else:
+                    # 非最后一块
+                    p1 = 0x11
+                
+                apdus.append(f"{cla:02X}{ins:02X}{p1:02X}{block_num:02X}{lc:02X}{block}")
+                block_num += 1
+        
+        return apdus
     
     @staticmethod
     def get_profiles_info(channel: int = 0) -> str:

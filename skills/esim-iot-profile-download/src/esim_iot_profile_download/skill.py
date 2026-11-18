@@ -847,7 +847,7 @@ class EsimIotProfileDownloadSkill(Skill):
     def _do_load_profile_package(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """LoadProfilePackage
 
-        加载 Profile 包数据
+        加载 Profile 包数据 - 按照 BPP 的 ASN.1 结构分块发送
         """
         ctx.output.text("步骤 12: 加载 Profile 包")
         session.data["state"] = EsimState.WAIT_LOAD_PROFILE_PACKAGE
@@ -861,7 +861,8 @@ class EsimIotProfileDownloadSkill(Skill):
             package_data = "3000"  # 空 SEQUENCE
 
         channel = session.data.get("channel", 0)
-        apdu_list = ApduBuilder.load_profile_package(package_data, block_number=0, is_last=True, channel=channel)
+        # 新的 load_profile_package 方法会按照 BPP 结构分块
+        apdu_list = ApduBuilder.load_profile_package(package_data, channel=channel)
 
         # 如果只有一条 APDU，直接发送
         if len(apdu_list) == 1:

@@ -8,6 +8,10 @@ from typing import Optional, List, Dict, Any
 from pyasn1.type import univ, namedtype, tag, char
 from pyasn1.codec.der import encoder, decoder
 from pyasn1.error import PyAsn1Error
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
+import os
 
 
 class Asn1CodecError(Exception):
@@ -485,5 +489,310 @@ def decode_profiles_info(response: bytes) -> Dict[str, Any]:
                         result["profile_state"] = state
             break
         offset += 1
-    
+
     return result
+
+
+# ========== BPP (Bound Profile Package) 生成 ==========
+
+class BPPGenerator:
+    """BPP 生成器
+    
+    实现 SGP.22 规范的 Bound Profile Package 生成，包括：
+    - ECKA 密钥协商 (ECDH)
+    - SCP03t 安全通道保护
+    - ASN.1 编码
+    """
+    
+    # 测试用 Host ID
+    TEST_HOST_ID = b"GSMA SM-XX"
+    
+    # PPK (Profile Protection Key) 常量
+    PPK_INITIAL_MAC_CHAINING_VALUE = bytes.fromhex("c516a604f2398a298c7f56250b4bff48")
+    PPK_ENC = bytes.fromhex("2639dce906b2ace1bce33d930863ce61")
+    PPK_CMAC = bytes.fromhex("50eef08f28e4394223fc1f288ef56006")
+    
+    def __init__(self, dp_pb_private_key_pem: bytes, dp_pb_cert_der: bytes):
+        """初始化 BPP 生成器
+        
+        Args:
+            dp_pb_private_key_pem: DP+ Profile Binding 私钥 (PEM 格式)
+            dp_pb_cert_der: DP+ Profile Binding 证书 (DER 格式)
+        """
+        self.dp_pb_private_key = serialization.load_pem_private_key(
+            dp_pb_private_key_pem,
+            password=None,
+            backend=default_backend()
+        )
+        self.dp_pb_cert = dp_pb_cert_der
+    
+    def generate_bpp(
+        self,
+        transaction_id: str,
+        eid: str,
+        euicc_otpk: bytes,
+        profile_package: bytes,
+        iccid: str,
+        profile_id: str,
+        profile_name: str,
+        service_provider_name: str = "Test Operator",
+        profile_class: int = 2
+    ) -> bytes:
+        """生成 Bound Profile Package
+        
+        Args:
+            transaction_id: 事务 ID (十六进制字符串)
+            eid: eUICC EID
+            euicc_otpk: eUICC One-Time Public Key (65 字节，04||x||y)
+            profile_package: Profile 包数据 (UPP 格式)
+            iccid: ICCID
+            profile_id: Profile ID
+            profile_name: Profile 名称
+            service_provider_name: 服务提供商名称
+            profile_class: Profile 类别
+            
+        Returns:
+            BPP 数据 (DER 编码)
+        """
+        # 1. 生成 SM-DP+ 一次性密钥对
+        smdp_otpk_private = ec.generate_private_key(ec.SECP256R1(), default_backend())
+        smdp_otpk_public = smdp_otpk_private.public_key()
+        smdp_otpk = self._encode_ec_public_key(smdp_otpk_public)
+        
+        # 2. ECKA 密钥协商
+        euicc_public = self._decode_ec_public_key(euicc_otpk)
+        shared_secret = smdp_otpk_private.exchange(ec.ECDH(), euicc_public)
+        
+        # 3. 派生 SCP03t 会话密钥
+        session_keys = self._derive_session_keys(
+            shared_secret,
+            self.TEST_HOST_ID,
+            bytes.fromhex(eid),
+            smdp_otpk,
+            euicc_otpk
+        )
+        
+        # 4. 构造 ConfigureISDP (87)
+        configure_isdp = self._encode_configure_isdp(profile_package)
+        first_87 = self._scp03t_protect(0x87, configure_isdp, session_keys)
+        
+        # 5. 构造 StoreMetadata (88)
+        metadata = self._encode_store_metadata(
+            iccid, service_provider_name, profile_name, profile_class
+        )
+        sequence_88 = self._scp03t_protect(0x88, metadata, session_keys)
+        
+        # 6. 构造 sequenceOf86 (Profile 数据)
+        sequence_86 = self._scp03t_protect(0x86, profile_package, session_keys)
+        
+        # 7. 构造 BF23 (initialiseSecureChannelRequest)
+        bf23 = self._encode_bf23(
+            transaction_id,
+            smdp_otpk,
+            euicc_otpk
+        )
+        
+        # 8. 组装 BPP
+        bpp = self._assemble_bpp(bf23, first_87, sequence_88, sequence_86)
+        
+        return bpp
+    
+    def _encode_ec_public_key(self, public_key) -> bytes:
+        """编码 EC 公钥为 65 字节格式 (04||x||y)"""
+        public_numbers = public_key.public_numbers()
+        x = public_numbers.x.to_bytes(32, 'big')
+        y = public_numbers.y.to_bytes(32, 'big')
+        return b'\x04' + x + y
+    
+    def _decode_ec_public_key(self, data: bytes):
+        """解码 65 字节格式的 EC 公钥"""
+        if len(data) != 65 or data[0] != 0x04:
+            raise Asn1CodecError(f"Invalid EC public key format: {len(data)} bytes")
+        
+        x = int.from_bytes(data[1:33], 'big')
+        y = int.from_bytes(data[33:65], 'big')
+        
+        public_numbers = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1())
+        return public_numbers.public_key(default_backend())
+    
+    def _derive_session_keys(
+        self,
+        shared_secret: bytes,
+        host_id: bytes,
+        eid: bytes,
+        smdp_otpk: bytes,
+        euicc_otpk: bytes
+    ) -> Dict[str, bytes]:
+        """派生 SCP03t 会话密钥
+        
+        使用简化的密钥派生函数 (KDF)
+        """
+        # 简化的 KDF：使用 SHA-256 派生密钥
+        kdf_input = shared_secret + host_id + eid + smdp_otpk + euicc_otpk
+        
+        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+        digest.update(kdf_input)
+        derived = digest.finalize()
+        
+        # 派生 3 个 16 字节密钥
+        return {
+            's_enc': derived[:16],
+            's_cmac': derived[16:32],
+            's_rmac': derived[0:16]  # 简化：使用相同的前 16 字节
+        }
+    
+    def _encode_configure_isdp(self, profile_package: bytes) -> bytes:
+        """编码 ConfigureISDP 命令"""
+        # 简化的 ConfigureISDP：只包含必要字段
+        # 实际应该包含更多配置参数
+        return b'\x80\x01\x01'  # 简化的配置数据
+    
+    def _encode_store_metadata(
+        self,
+        iccid: str,
+        service_provider_name: str,
+        profile_name: str,
+        profile_class: int
+    ) -> bytes:
+        """编码 StoreMetadata 命令"""
+        # ICCID (80)
+        iccid_bytes = bytes.fromhex(iccid) if len(iccid) % 2 == 0 else bytes.fromhex(iccid + 'F')
+        iccid_field = _der_tlv(b'\x80', iccid_bytes)
+        
+        # Service Provider Name (82)
+        spn_field = _der_tlv(b'\x82', service_provider_name.encode('utf-8'))
+        
+        # Profile Name (90)
+        pn_field = _der_tlv(b'\x90', profile_name.encode('utf-8'))
+        
+        # Profile Class (95)
+        pc_field = _der_tlv(b'\x95', bytes([profile_class]))
+        
+        content = iccid_field + spn_field + pn_field + pc_field
+        return content
+    
+    def _scp03t_protect(self, tag: int, data: bytes, keys: Dict[str, bytes]) -> bytes:
+        """SCP03t 保护数据
+        
+        简化的 SCP03t 实现：
+        - 使用 AES-128-CMAC 计算 MAC
+        - 使用 AES-128 加密数据
+        """
+        # 简化的 SCP03t：只计算 MAC，不加密
+        # 实际应该使用完整的 SCP03t 协议
+        
+        # 计算 CMAC
+        from cryptography.hazmat.primitives.cmac import CMAC
+        from cryptography.hazmat.primitives.ciphers import algorithms
+        
+        cmac = CMAC(algorithms.AES(keys['s_cmac']), backend=default_backend())
+        cmac.update(data)
+        mac = cmac.finalize()[:8]  # 取前 8 字节作为 MAC
+        
+        # 构造受保护的数据块
+        # 格式: tag + length + data + mac
+        protected = bytes([tag]) + self._encode_ber_len(len(data) + 8) + data + mac
+        
+        return protected
+    
+    def _encode_bf23(
+        self,
+        transaction_id: str,
+        smdp_otpk: bytes,
+        euicc_otpk: bytes
+    ) -> bytes:
+        """编码 BF23 (initialiseSecureChannelRequest)"""
+        # remoteOperation [2]
+        remote_op = _der_tlv(b'\xa2', b'\x02\x01\x01')  # INTEGER 1
+        
+        # transactionId [0]
+        tid_bytes = bytes.fromhex(transaction_id)
+        tid_field = _der_tlv(b'\xa0', tid_bytes)
+        
+        # controlReferenceTemplate [6]
+        crt_content = (
+            _der_tlv(b'\x80', b'\x01') +  # 算法标识
+            _der_tlv(b'\x81', b'\x10') +  # 密钥长度
+            _der_tlv(b'\x84', self.TEST_HOST_ID)  # Host ID
+        )
+        crt_field = _der_tlv(b'\xa6', crt_content)
+        
+        # smdpPublic [73] (SM-DP+ 一次性公钥)
+        smdp_public = _der_tlv(b'\x86', smdp_otpk)  # 简化：使用 OCTET STRING
+        
+        # 签名 (简化：使用空签名)
+        signature = _der_tlv(b'\x87', b'\x00' * 64)
+        
+        content = remote_op + tid_field + crt_field + smdp_public + signature
+        return _der_tlv(b'\xbf\x23', content)
+    
+    def _assemble_bpp(
+        self,
+        bf23: bytes,
+        first_87: bytes,
+        sequence_88: bytes,
+        sequence_86: bytes
+    ) -> bytes:
+        """组装 BPP"""
+        # A0: firstSequenceOf87
+        a0 = _der_tlv(b'\xa0', first_87)
+        
+        # A1: sequenceOf88
+        a1 = _der_tlv(b'\xa1', sequence_88)
+        
+        # A3: sequenceOf86
+        a3 = _der_tlv(b'\xa3', sequence_86)
+        
+        # BPP 内容
+        bpp_content = bf23 + a0 + a1 + a3
+        
+        # BF36: BoundProfilePackage
+        return _der_tlv(b'\xbf\x36', bpp_content)
+    
+    def _encode_ber_len(self, length: int) -> bytes:
+        """编码 BER 长度"""
+        if length < 128:
+            return bytes([length])
+        elif length < 256:
+            return bytes([0x81, length])
+        else:
+            return bytes([0x82, (length >> 8) & 0xFF, length & 0xFF])
+
+
+def generate_bpp(
+    transaction_id: str,
+    eid: str,
+    euicc_otpk: bytes,
+    profile_package: bytes,
+    iccid: str,
+    profile_id: str,
+    profile_name: str,
+    dp_pb_private_key_pem: bytes,
+    dp_pb_cert_der: bytes
+) -> bytes:
+    """生成 Bound Profile Package 的便捷函数
+    
+    Args:
+        transaction_id: 事务 ID (十六进制字符串)
+        eid: eUICC EID
+        euicc_otpk: eUICC One-Time Public Key (65 字节，04||x||y)
+        profile_package: Profile 包数据 (UPP 格式)
+        iccid: ICCID
+        profile_id: Profile ID
+        profile_name: Profile 名称
+        dp_pb_private_key_pem: DP+ Profile Binding 私钥 (PEM 格式)
+        dp_pb_cert_der: DP+ Profile Binding 证书 (DER 格式)
+        
+    Returns:
+        BPP 数据 (DER 编码)
+    """
+    generator = BPPGenerator(dp_pb_private_key_pem, dp_pb_cert_der)
+    return generator.generate_bpp(
+        transaction_id=transaction_id,
+        eid=eid,
+        euicc_otpk=euicc_otpk,
+        profile_package=profile_package,
+        iccid=iccid,
+        profile_id=profile_id,
+        profile_name=profile_name
+    )

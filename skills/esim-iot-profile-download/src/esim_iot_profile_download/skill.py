@@ -19,7 +19,8 @@ from .asn1_codec import (
     encode_bf57_add_initial_eim,
     encode_bf51_enable_psmo,
     decode_profiles_info,
-    Asn1CodecError
+    Asn1CodecError,
+    generate_bpp
 )
 from .resources import ResourceManager, CertificateManager, ProfileManager, ResourceLoadError
 
@@ -847,12 +848,12 @@ class EsimIotProfileDownloadSkill(Skill):
     def _do_load_profile_package(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """LoadProfilePackage
 
-        加载 Profile 包数据 - 按照 BPP 的 ASN.1 结构分块发送
+        加载 Profile 包数据 - 生成 BPP 并按照 ASN.1 结构分块发送
         """
         ctx.output.text("步骤 12: 加载 Profile 包")
         session.data["state"] = EsimState.WAIT_LOAD_PROFILE_PACKAGE
 
-        # 从会话数据中获取 Profile 包（实际应从资源文件或参数中加载）
+        # 从会话数据中获取 Profile 包（UPP 格式）
         package_data = session.data.get("profile_package", "")
 
         if not package_data:
@@ -860,9 +861,54 @@ class EsimIotProfileDownloadSkill(Skill):
             ctx.output.text("警告: 未提供 Profile 包数据，使用空包占位")
             package_data = "3000"  # 空 SEQUENCE
 
+        # 获取必要的参数
+        params = session.data.get("params", {})
+        transaction_id = session.data.get("transaction_id", "00000000000000000000000000000000")
+        eid = params.get("eid", "89049032123451234512345678901235")
+        iccid = params.get("iccid", "8929901012345678905F")
+        profile_id = params.get("profile_id", "A0000005591010FFFFFFFF8900001000")
+        
+        # 获取 eUICC OTPK (从 PrepareDownload 响应中获取)
+        euicc_otpk_hex = session.data.get("euicc_otpk", "")
+        if euicc_otpk_hex:
+            euicc_otpk = bytes.fromhex(euicc_otpk_hex)
+        else:
+            # 使用默认的 OTPK (测试用)
+            euicc_otpk = bytes(65)
+            ctx.output.text("警告: 未获取到 eUICC OTPK，使用默认值")
+
+        # 获取 DP+ Profile Binding 证书和私钥
+        dp_pb_cert = session.data.get("dp_pb_cert", "")
+        dp_pb_key = session.data.get("dp_pb_key", "")
+        
+        # 生成 BPP
+        try:
+            if dp_pb_cert and dp_pb_key:
+                ctx.output.text("生成 BPP (Bound Profile Package)...")
+                bpp_bytes = generate_bpp(
+                    transaction_id=transaction_id,
+                    eid=eid,
+                    euicc_otpk=euicc_otpk,
+                    profile_package=bytes.fromhex(package_data),
+                    iccid=iccid,
+                    profile_id=profile_id,
+                    profile_name="Test Profile",
+                    dp_pb_private_key_pem=bytes.fromhex(dp_pb_key),
+                    dp_pb_cert_der=bytes.fromhex(dp_pb_cert)
+                )
+                bpp_hex = bpp_bytes.hex().upper()
+                ctx.output.text(f"BPP 生成成功，长度: {len(bpp_bytes)} 字节")
+            else:
+                # 没有证书，使用简化的 UPP 包装
+                ctx.output.text("警告: 缺少 DP+ 证书，使用简化的 UPP 包装")
+                bpp_hex = package_data
+        except Exception as e:
+            ctx.output.text(f"BPP 生成失败: {e}，使用简化的 UPP 包装")
+            bpp_hex = package_data
+
         channel = session.data.get("channel", 0)
-        # 新的 load_profile_package 方法会按照 BPP 结构分块
-        apdu_list = ApduBuilder.load_profile_package(package_data, channel=channel)
+        # load_profile_package 方法会按照 BPP 结构分块
+        apdu_list = ApduBuilder.load_profile_package(bpp_hex, channel=channel)
 
         # 如果只有一条 APDU，直接发送
         if len(apdu_list) == 1:

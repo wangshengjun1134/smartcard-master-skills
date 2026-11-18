@@ -77,14 +77,6 @@ class EsimIotProfileDownloadSkill(Skill):
     4. eIM 启用（间接模式：AddInitialEim → EnablePSMO）
     """
 
-    # 这些状态下 91XX 表示有主动命令待 FETCH；其余状态的 91XX 视为命令完成
-    _PROACTIVE_STATES = frozenset({
-        EsimState.WAIT_TERMINAL_PROFILE,
-        EsimState.WAIT_TERMINAL_RESPONSE,
-        EsimState.WAIT_FETCH,
-        EsimState.WAIT_FETCH_REFRESH,
-    })
-
     def get_manifest(self) -> dict:
         return {
             "skillId": "esim.iot-profile-download",
@@ -174,38 +166,36 @@ class EsimIotProfileDownloadSkill(Skill):
         # 解析 SW
         sw = result.data.get("sw", "")
         response = result.data.get("response", "")
-        
-        # 处理 61XX 响应 (更多数据可用)
-        # Skill 需要发送 GET RESPONSE 命令获取剩余数据
-        if sw.startswith("61") and len(sw) == 4:
-            if current_state == EsimState.WAIT_GET_RESPONSE:
-                # 链式 61XX：累积数据块，保留最初被打断的状态
-                session.data["pending_response"] = session.data.get("pending_response", "") + response
+
+        # ===== 统一处理 61XX(GET RESPONSE) / 91XX(FETCH) =====
+        # 任何 APDU 返回 61XX/91XX 都先取完剩余数据并累积，再按原状态继续。
+        if sw.startswith(("61", "91")) and len(sw) == 4:
+            if current_state in (EsimState.WAIT_GET_RESPONSE, EsimState.WAIT_FETCH):
+                accumulated = session.data.pop("response_accum", "") + response
             else:
-                # 保存当前状态，以便在获取完整响应后继续
                 session.data["previous_state"] = current_state
-                session.data["pending_response"] = response
-            return self._do_get_response(ctx, session, int(sw[2:], 16))
+                accumulated = response
+            return self._continue_collect(ctx, session, accumulated, sw)
 
-        # 处理 91XX 响应 (eUICC 异步响应)
-        if sw.startswith("91") and len(sw) == 4:
-            # 只有主动命令（TERMINAL PROFILE / TERMINAL RESPONSE 之后）才需要 FETCH；
-            # ES10 命令结束时卡也可能返回 91XX，参考实现的期望 SW 为 [9000, 91XX, 61XX]，
-            # 此时表示命令已完成，不能发 FETCH（部分卡对 FETCH 返回 6D00）。
-            if current_state in self._PROACTIVE_STATES:
-                if current_state == EsimState.WAIT_FETCH:
-                    # 链式 91XX：累积数据块，保留最初被打断的状态
-                    session.data["pending_response"] = session.data.get("pending_response", "") + response
+        if current_state in (EsimState.WAIT_GET_RESPONSE, EsimState.WAIT_FETCH):
+            # 这是 GET RESPONSE / FETCH 自己的结果，需要回到被打断的状态继续
+            accumulated = session.data.pop("response_accum", "") + response
+            pending_kind = session.data.pop("pending_kind", "61")
+            previous_state = session.data.pop("previous_state", current_state)
+
+            if sw not in ("9000", ""):
+                if pending_kind == "91":
+                    # 部分卡对 ES10 命令也回 91XX，但 FETCH 不受支持(6D00)：
+                    # 说明原命令本身已完成，按成功继续。
+                    sw = "9000"
                 else:
-                    # 保存当前状态，以便在获取完整响应后继续
-                    session.data["previous_state"] = current_state
-                    session.data["pending_response"] = response
-                return self._do_fetch(ctx, session, int(sw[2:], 16))
-
-            full_response = session.data.pop("pending_response", "") + response
-            previous_state = session.data.pop("previous_state", None)
-            resume_state = previous_state if current_state == EsimState.WAIT_GET_RESPONSE else current_state
-            return self._continue_from_state(ctx, session, resume_state, full_response, "9000")
+                    session.data["state"] = EsimState.FAILED
+                    return SkillResult.failed(
+                        session.session_id,
+                        "GET_RESPONSE_FAILED",
+                        f"GET RESPONSE 失败: {sw}"
+                    )
+            return self._continue_from_state(ctx, session, previous_state, accumulated, sw)
 
         sw_parsed = ResponseParser.parse_sw(sw)
 
@@ -255,10 +245,6 @@ class EsimIotProfileDownloadSkill(Skill):
             failure = self._check_memory_reset_result(ctx, session, result.data.get("response", ""))
             if failure:
                 return failure
-            return self._do_list_notification(ctx, session)
-
-        elif current_state == EsimState.WAIT_FETCH_REFRESH:
-            # FETCH REFRESH 完成后，进入 ListNotification
             return self._do_list_notification(ctx, session)
 
         elif current_state == EsimState.WAIT_LIST_NOTIFICATION:
@@ -442,50 +428,6 @@ class EsimIotProfileDownloadSkill(Skill):
             session.data["profiles_info_response"] = response
             return self._verify_and_complete(ctx, session)
 
-        # 处理 61XX 响应 (GET RESPONSE)
-        elif current_state == EsimState.WAIT_GET_RESPONSE:
-            # 获取保存的原始响应数据
-            pending_response = session.data.get("pending_response", "")
-            new_response = result.data.get("response", "")
-            sw = result.data.get("sw", "")
-            
-            # 合并响应数据
-            full_response = pending_response + new_response
-            
-            # 检查是否还有更多数据 (链式 61XX)
-            if sw.startswith("61") and len(sw) == 4:
-                session.data["pending_response"] = full_response
-                return self._do_get_response(ctx, session, int(sw[2:], 16))
-            
-            # 响应完成，清除临时数据
-            previous_state = session.data.pop("previous_state", None)
-            session.data.pop("pending_response", None)
-            
-            # 根据 previous_state 继续执行
-            return self._continue_from_state(ctx, session, previous_state, full_response, sw)
-
-        # 处理 91XX 响应 (FETCH)
-        elif current_state == EsimState.WAIT_FETCH:
-            # 获取保存的原始响应数据
-            pending_response = session.data.get("pending_response", "")
-            new_response = result.data.get("response", "")
-            sw = result.data.get("sw", "")
-            
-            # 合并响应数据
-            full_response = pending_response + new_response
-            
-            # 检查是否还有更多数据 (链式 91XX)
-            if sw.startswith("91") and len(sw) == 4:
-                session.data["pending_response"] = full_response
-                return self._do_fetch(ctx, session, int(sw[2:], 16))
-            
-            # 响应完成，清除临时数据
-            previous_state = session.data.pop("previous_state", None)
-            session.data.pop("pending_response", None)
-            
-            # 根据 previous_state 继续执行
-            return self._continue_from_state(ctx, session, previous_state, full_response, sw)
-        
         # 未知状态
         return SkillResult.failed(
             session.session_id,
@@ -599,15 +541,14 @@ class EsimIotProfileDownloadSkill(Skill):
         action = self._build_apdu_action("esim.euicc-memory-reset", "重置 eUICC 内存", apdu)
         return SkillResult.continue_with(session.session_id, action)
 
-    def _do_fetch_refresh(self, ctx: SkillContext, session: SkillSession, length: int) -> SkillResult:
-        """FETCH - 处理 91XX 异步响应"""
-        ctx.output.text(f"步骤 7.2: 清理 - FETCH REFRESH (length={length})")
-        session.data["state"] = EsimState.WAIT_FETCH_REFRESH
-
-        channel = session.data.get("channel", 0)
-        apdu = ApduBuilder.fetch(length, channel=channel)
-        action = self._build_apdu_action("esim.fetch-refresh", "FETCH REFRESH", apdu)
-        return SkillResult.continue_with(session.session_id, action)
+    def _continue_collect(self, ctx: SkillContext, session: SkillSession, accumulated: str, sw: str) -> SkillResult:
+        """累积数据并继续取数：61XX → GET RESPONSE，91XX → FETCH"""
+        session.data["response_accum"] = accumulated
+        kind = sw[:2]
+        session.data["pending_kind"] = "61" if kind == "61" else "91"
+        if kind == "61":
+            return self._do_get_response(ctx, session, int(sw[2:], 16))
+        return self._do_fetch(ctx, session, int(sw[2:], 16))
 
     def _do_get_response(self, ctx: SkillContext, session: SkillSession, length: int) -> SkillResult:
         """GET RESPONSE - 处理 61XX 响应，获取更多数据"""
@@ -679,8 +620,6 @@ class EsimIotProfileDownloadSkill(Skill):
             failure = self._check_memory_reset_result(ctx, session, response)
             if failure:
                 return failure
-            return self._do_list_notification(ctx, session)
-        elif previous_state == EsimState.WAIT_FETCH_REFRESH:
             return self._do_list_notification(ctx, session)
         elif previous_state == EsimState.WAIT_LIST_NOTIFICATION:
             return self._do_remove_notification(ctx, session, mock_result)

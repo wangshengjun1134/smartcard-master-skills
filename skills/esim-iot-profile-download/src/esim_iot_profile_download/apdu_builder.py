@@ -499,14 +499,14 @@ class ApduBuilder:
     def fetch(length: int, channel: int = 0) -> str:
         """FETCH (91XX 响应)
 
-        处理 eUICC 异步响应
-        
+        FETCH 属于 class-0 命令，CLA 固定 0x80（参考实现为 801200xxxx）；
+        用 0x80|channel 会被真卡拒绝（6D00）。
+
         Args:
             length: 数据长度
-            channel: 逻辑通道号 (0-3)
+            channel: 逻辑通道号（保留参数，不参与 CLA 计算）
         """
-        # CLA = 0x80 + 通道号
-        cla = 0x80 + (channel & 0x03)
+        cla = 0x80
         ins = 0x12  # FETCH
         p1 = 0x00
         p2 = 0x00

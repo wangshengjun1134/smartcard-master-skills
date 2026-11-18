@@ -234,7 +234,10 @@ class ApduBuilder:
     def load_profile_package(package_data: str, channel: int = 0) -> list:
         """LoadProfilePackage (BF36)
 
-        加载 Profile 包 - 按照 BPP 的 ASN.1 结构分块
+        加载 Profile 包 - 支持 UPP 和 BPP 两种格式
+        
+        UPP (Unbound Profile Package): 以 A0 开头，需要包装成 BPP
+        BPP (Bound Profile Package): 以 BF36 开头，直接发送
         
         根据 SGP.22 规范，BPP 需要按照 ASN.1 结构分割成多个 STORE DATA 对象：
         - BF23 (initialiseSecureChannelRequest) - 第 1 个对象
@@ -248,7 +251,7 @@ class ApduBuilder:
         每个对象的块编号从 0 开始。
 
         Args:
-            package_data: Profile 包数据（原始内容，不包含 BF36 标签）
+            package_data: Profile 包数据（UPP 或 BPP 格式）
             channel: 逻辑通道号 (0-3)
 
         Returns:
@@ -258,19 +261,18 @@ class ApduBuilder:
         cla = 0x80 + (channel & 0x03)
         ins = 0xE2  # ES10 命令
 
-        # package_data 是原始内容，需要添加 BF36 标签和长度
-        package_data_len = len(package_data) // 2
-
-        # 构造完整的 BF36 数据
-        if package_data_len > 255:
-            # 长格式: 82 XX XX (2字节长度)
-            bpp_data = f"BF3682{package_data_len:04X}{package_data}"
-        elif package_data_len > 127:
-            # 长格式: 81 XX (1字节长度)
-            bpp_data = f"BF3681{package_data_len:02X}{package_data}"
+        # 检查数据格式
+        if package_data.startswith("BF36"):
+            # BPP 格式，直接使用
+            bpp_data = package_data
+        elif package_data.startswith("A0") or package_data.startswith("A1"):
+            # UPP 格式，需要包装成 BPP
+            # 添加空的 BF23 (initialiseSecureChannelRequest)
+            # BF23 00 - 空的 initialiseSecureChannelRequest
+            bpp_data = "BF36" + ApduBuilder._encode_ber_len((len(package_data) + 2) // 2) + "BF2300" + package_data
         else:
-            # 短格式
-            bpp_data = f"BF36{package_data_len:02X}{package_data}"
+            # 未知格式，假设是 UPP，尝试包装
+            bpp_data = "BF36" + ApduBuilder._encode_ber_len((len(package_data) + 2) // 2) + "BF2300" + package_data
 
         # 解析 BPP 结构并分割成 STORE DATA 对象
         store_data_objects = ApduBuilder._parse_bpp_structure(bpp_data)

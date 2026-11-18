@@ -263,19 +263,16 @@ class ApduBuilder:
 
         # 检查数据格式
         if package_data.startswith("BF36"):
-            # BPP 格式，直接使用
-            bpp_data = package_data
-        elif package_data.startswith("A0") or package_data.startswith("A1"):
-            # UPP 格式，需要包装成 BPP
-            # 添加空的 BF23 (initialiseSecureChannelRequest)
-            # BF23 00 - 空的 initialiseSecureChannelRequest
-            bpp_data = "BF36" + ApduBuilder._encode_ber_len((len(package_data) + 2) // 2) + "BF2300" + package_data
+            # BPP 格式，按照 BPP 结构分块
+            store_data_objects = ApduBuilder._parse_bpp_structure(package_data)
         else:
-            # 未知格式，假设是 UPP，尝试包装
-            bpp_data = "BF36" + ApduBuilder._encode_ber_len((len(package_data) + 2) // 2) + "BF2300" + package_data
-
-        # 解析 BPP 结构并分割成 STORE DATA 对象
-        store_data_objects = ApduBuilder._parse_bpp_structure(bpp_data)
+            # UPP 格式或简化模式，直接按 255 字节分块
+            # 每个块作为独立的 STORE DATA 对象
+            store_data_objects = []
+            max_block_size = 255
+            for i in range(0, len(package_data), max_block_size * 2):
+                block = package_data[i:i + max_block_size * 2]
+                store_data_objects.append(block)
         
         # 为每个 STORE DATA 对象生成 APDU 列表
         apdus = []
@@ -289,6 +286,8 @@ class ApduBuilder:
     def _parse_bpp_structure(bpp_data: str) -> list:
         """解析 BPP 结构，分割成 STORE DATA 对象
         
+        根据 SGP.22 2.5.5 规范和 Java 参考项目实现：
+        
         BPP 结构:
         BF36 (外层)
           BF23 (initialiseSecureChannelRequest)
@@ -296,6 +295,11 @@ class ApduBuilder:
           A1 (sequenceOf88) - 包含 88 TLVs
           A2 (secondSequenceOf87) - 可选
           A3 (sequenceOf86) - 包含 86 TLVs
+        
+        分块规则：
+        1. 第一个对象: BF36头部 + BF23（一起发送）
+        2. A0/A2 序列: 头部 + 第一个87 TLV（一起发送），后续87各自独立
+        3. A1/A3 序列: 头部（独立发送），每个88/86 TLV各自独立
         """
         # 解析外层 BF36
         offset = 0
@@ -311,57 +315,63 @@ class ApduBuilder:
         offset += 2
         if len_byte & 0x80:
             num_bytes = len_byte & 0x7F
+            outer_len = int(bpp_data[offset:offset+num_bytes*2], 16)
             offset += num_bytes * 2
+        else:
+            outer_len = len_byte
         
-        # 外层头部长度
-        header_len = offset
+        # 外层头部（BF36 + 长度）
+        outer_header = bpp_data[:offset]
         
         # 解析内部字段
-        objects = []
         fields = ApduBuilder._decode_ber_tlv_sequence(bpp_data[offset:])
         
         if not fields or fields[0][0] != "BF23":
             # 如果没有 BF23 开头，返回整个数据
             return [bpp_data]
         
-        # 第一个对象: BF36 头部 + BF23
-        first_field = fields[0]
-        first_obj = bpp_data[:header_len] + first_field[0] + first_field[1]
-        objects.append(first_obj)
+        objects = []
+        
+        # 第一个对象: BF36头部 + BF23（一起发送）
+        bf23_tag, bf23_value = fields[0]
+        bf23_encoded = bf23_tag + ApduBuilder._encode_ber_len(len(bf23_value) // 2) + bf23_value
+        objects.append(outer_header + bf23_encoded)
         
         # 处理后续字段
         for i in range(1, len(fields)):
             field_tag, field_value = fields[i]
+            field_header = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2)
             
             if field_tag in ["A0", "A2"]:
                 # firstSequenceOf87 或 secondSequenceOf87
-                # 头部 + 第一个 87 TLV 作为一个对象
+                # 头部 + 第一个 87 TLV（一起发送）
                 children = ApduBuilder._decode_ber_tlv_sequence(field_value)
                 if children:
-                    # 计算头部长度
-                    field_encoded = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value
-                    header = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2)
                     # 头部 + 第一个子字段
-                    first_child = children[0][0] + children[0][1]
-                    objects.append(header + first_child)
+                    first_child_tag, first_child_value = children[0]
+                    first_child_encoded = first_child_tag + ApduBuilder._encode_ber_len(len(first_child_value) // 2) + first_child_value
+                    objects.append(field_header + first_child_encoded)
                     # 后续子字段各自作为独立对象
                     for j in range(1, len(children)):
-                        objects.append(children[j][0] + children[j][1])
+                        child_tag, child_value = children[j]
+                        child_encoded = child_tag + ApduBuilder._encode_ber_len(len(child_value) // 2) + child_value
+                        objects.append(child_encoded)
                 else:
-                    objects.append(field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value)
+                    # 空的序列，只发送头部
+                    objects.append(field_header)
             
             elif field_tag in ["A1", "A3"]:
                 # sequenceOf88 或 sequenceOf86
-                # 头部作为一个对象，每个子字段各自作为独立对象
-                header = field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2)
-                objects.append(header)
+                # 头部（独立发送），每个 88/86 TLV 各自独立发送
+                objects.append(field_header)
                 children = ApduBuilder._decode_ber_tlv_sequence(field_value)
-                for child in children:
-                    objects.append(child[0] + child[1])
+                for child_tag, child_value in children:
+                    child_encoded = child_tag + ApduBuilder._encode_ber_len(len(child_value) // 2) + child_value
+                    objects.append(child_encoded)
             
             else:
                 # 其他字段直接作为一个对象
-                objects.append(field_tag + ApduBuilder._encode_ber_len(len(field_value) // 2) + field_value)
+                objects.append(field_header + field_value)
         
         return objects
 

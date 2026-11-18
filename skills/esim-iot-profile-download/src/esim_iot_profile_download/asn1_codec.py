@@ -502,6 +502,9 @@ class BPPGenerator:
     - ECKA 密钥协商 (ECDH)
     - SCP03t 安全通道保护
     - ASN.1 编码
+    
+    注意：当 euicc_otpk 为空或无效时，使用简化模式，
+    跳过加密步骤，直接发送 UPP 数据。
     """
     
     # 测试用 Host ID
@@ -544,6 +547,7 @@ class BPPGenerator:
             transaction_id: 事务 ID (十六进制字符串)
             eid: eUICC EID
             euicc_otpk: eUICC One-Time Public Key (65 字节，04||x||y)
+                       如果为空或无效，使用简化模式
             profile_package: Profile 包数据 (UPP 格式)
             iccid: ICCID
             profile_id: Profile ID
@@ -554,6 +558,25 @@ class BPPGenerator:
         Returns:
             BPP 数据 (DER 编码)
         """
+        # 检查 euicc_otpk 是否有效
+        use_simplified_mode = (
+            not euicc_otpk or 
+            len(euicc_otpk) != 65 or 
+            euicc_otpk[0] != 0x04 or
+            euicc_otpk == bytes(65)
+        )
+        
+        if use_simplified_mode:
+            # 简化模式：跳过加密，直接构造 BPP
+            return self._generate_bpp_simplified(
+                transaction_id,
+                profile_package,
+                iccid,
+                profile_name,
+                profile_class
+            )
+        
+        # 正常模式：完整的 BPP 生成
         # 1. 生成 SM-DP+ 一次性密钥对
         smdp_otpk_private = ec.generate_private_key(ec.SECP256R1(), default_backend())
         smdp_otpk_public = smdp_otpk_private.public_key()
@@ -596,6 +619,55 @@ class BPPGenerator:
         bpp = self._assemble_bpp(bf23, first_87, sequence_88, sequence_86)
         
         return bpp
+    
+    def _generate_bpp_simplified(
+        self,
+        transaction_id: str,
+        profile_package: bytes,
+        iccid: str,
+        profile_name: str,
+        profile_class: int
+    ) -> bytes:
+        """简化模式的 BPP 生成
+        
+        跳过加密步骤，直接发送原始 UPP 数据。
+        用于测试或当 euicc_otpk 不可用时。
+        
+        注意：这种模式生成的 BPP 可能被某些卡片拒绝，
+        因为缺少有效的签名和 MAC。
+        """
+        # 直接返回原始的 UPP 数据，不添加 BPP 头部
+        # 因为某些卡片期望直接接收 UPP 数据
+        return profile_package
+    
+    def _encode_bf23_simplified(self, transaction_id: str) -> bytes:
+        """编码 BF23 (initialiseSecureChannelRequest) - 简化版本
+        
+        用于简化模式，跳过签名。
+        """
+        # remoteOperation [2]
+        remote_op = _der_tlv(b'\xa2', b'\x02\x01\x01')  # INTEGER 1
+        
+        # transactionId [0]
+        tid_bytes = bytes.fromhex(transaction_id)
+        tid_field = _der_tlv(b'\xa0', tid_bytes)
+        
+        # controlReferenceTemplate [6]
+        crt_content = (
+            _der_tlv(b'\x80', b'\x01') +  # 算法标识
+            _der_tlv(b'\x81', b'\x10') +  # 密钥长度
+            _der_tlv(b'\x84', self.TEST_HOST_ID)  # Host ID
+        )
+        crt_field = _der_tlv(b'\xa6', crt_content)
+        
+        # smdpPublic [73] - 使用空的公钥
+        smdp_public = _der_tlv(b'\x86', bytes(65))
+        
+        # 签名 (简化：使用空签名)
+        signature = _der_tlv(b'\x87', b'\x00' * 64)
+        
+        content = remote_op + tid_field + crt_field + smdp_public + signature
+        return _der_tlv(b'\xbf\x23', content)
     
     def _encode_ec_public_key(self, public_key) -> bytes:
         """编码 EC 公钥为 65 字节格式 (04||x||y)"""

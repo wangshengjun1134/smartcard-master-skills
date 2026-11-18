@@ -437,18 +437,18 @@ class ApduBuilder:
         
         返回所有分块的 APDU 列表
         
-        根据参考日志，ES10 命令的链式分块格式：
-        - 第一块：P1 = 0x91, P2 = 0x00（表示这是第一块/最后一块的标识）
-        - 中间块：P1 = 0x11, P2 = 块号（递增）
+        根据 SGP.33 规范和参考日志，ES10 命令的链式分块格式：
+        - 所有块：P1 = 0x11, P2 = 块号（递增）
         - 最后一块：P1 = 0x91, P2 = 块号
         
-        注意：P1=91 表示"这是块的边界"，P1=11 表示"这是中间数据"
+        注意：LoadBoundProfilePackage 可能需要按照 Profile 包的 ASN.1 结构
+        来分块，而不是简单地按 255 字节切分。当前实现使用简单分块。
         
         Args:
             cla: CLA 字节
             ins: INS 字节
-            p1: P1 参数（第一块使用，通常是 0x11 或 0x91）
-            p2: P2 参数（第一块使用，通常为 0x00）
+            p1: P1 参数（未使用，根据规范自动设置）
+            p2: P2 参数（未使用，根据规范自动设置）
             data: 完整数据（已经是包含标签的连续数据）
             
         Returns:
@@ -465,22 +465,17 @@ class ApduBuilder:
             lc = len(block) // 2
             
             # 确定 P1 和 P2
-            # 根据参考日志：
-            # - 第一块: P1=91, P2=00
-            # - 中间块: P1=11, P2=递增
-            # - 最后一块: P1=91, P2=递增
-            if block_num == 0:
-                # 第一块：P1=91, P2=00
+            # 根据 SGP.33 规范：
+            # - 非最后块: P1 = 0x11, P2 = 块号
+            # - 最后块: P1 = 0x91, P2 = 块号
+            if block_num == total_blocks - 1:
+                # 最后一块：P1 = 0x91
                 block_p1 = 0x91
-                block_p2 = 0x00
-            elif block_num == total_blocks - 1:
-                # 最后一块：P1=91
-                block_p1 = 0x91
-                block_p2 = block_num
             else:
-                # 中间块：P1=11
+                # 非最后块：P1 = 0x11
                 block_p1 = 0x11
-                block_p2 = block_num
+            
+            block_p2 = block_num
             
             apdus.append(f"{cla:02X}{ins:02X}{block_p1:02X}{block_p2:02X}{lc:02X}{block}")
         

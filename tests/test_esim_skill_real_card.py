@@ -280,7 +280,7 @@ def send_request(proc: subprocess.Popen, request: Dict[str, Any], timeout: int =
 
 def run_skill_with_real_card(
     skill_input: Dict[str, Any],
-    max_steps: int = 50,
+    max_steps: int = 500,
     verbose: bool = True
 ) -> Dict[str, Any]:
     """使用真实卡片运行 Skill
@@ -361,6 +361,10 @@ def run_skill_with_real_card(
             if status in ["SUCCESS", "FAILED", "CANCELLED"]:
                 if verbose:
                     print(f"\n=== Skill 执行完成: {status} ===")
+                    error = current_response["result"].get("error")
+                    if error:
+                        print(f"errorCode: {error.get('code')}")
+                        print(f"errorMessage: {error.get('message')}")
                     if "data" in current_response["result"]:
                         print(f"Data: {json.dumps(current_response['result']['data'], indent=2, ensure_ascii=False)}")
                 return current_response["result"]
@@ -395,6 +399,8 @@ def run_skill_with_real_card(
                     if "response" in result.get("data", {}):
                         resp = result["data"]["response"]
                         print(f"     响应: {resp[:60]}..." if len(resp) > 60 else f"     响应: {resp}")
+                        if len(resp) > 60 and resp.startswith("BF37"):
+                            print(f"     ProfileInstallationResult: {resp}")
                     if "sw" in result.get("data", {}):
                         print(f"     SW: {result['data']['sw']}")
             
@@ -479,10 +485,10 @@ class TestEsimSkillWithRealCard:
                 "profile_id": "A0000005591010FFFFFFFF8900001000",
                 "tac": "00000000"
             },
-            max_steps=50,
+            max_steps=80,
             verbose=True
         )
-        
+
         # 流程应该能正常结束
         assert result["status"] in ["SUCCESS", "FAILED"]
 
@@ -502,7 +508,7 @@ if __name__ == "__main__":
             "profile_id": "A0000005591010FFFFFFFF8900001000",
             "tac": "00000000"
         },
-        max_steps=50,
+        max_steps=500,
         verbose=True
     )
 

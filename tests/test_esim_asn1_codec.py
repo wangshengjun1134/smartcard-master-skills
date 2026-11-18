@@ -10,6 +10,7 @@ from esim_iot_profile_download.asn1_codec import (
     encode_bf57_add_initial_eim,
     encode_bf51_enable_psmo,
     decode_profiles_info,
+    decode_profile_installation_result,
     Asn1CodecError
 )
 
@@ -130,3 +131,40 @@ def test_decode_profiles_info_empty():
     """测试 GetProfilesInfo 解码 - 空响应"""
     result = decode_profiles_info(b"")
     assert result.get("profile_state") is None
+
+
+def test_decode_profile_installation_result_success():
+    """测试 ProfileInstallationResult 解码 - 成功分支 (finalResult = A0)"""
+    response = bytes.fromhex(
+        "BF3716BF2711"          # BF37 { BF27 }
+        "800101"                # transactionId
+        "A208A0064F04800101"    # finalResult { A0 { 4F ... } }
+        "5F3700"                # 占位签名
+    )
+
+    result = decode_profile_installation_result(response)
+    assert result["ok"] is True
+    assert result["transaction_id"] == "01"
+
+
+def test_decode_profile_installation_result_error():
+    """测试 ProfileInstallationResult 解码 - 错误分支 (finalResult = A1)
+
+    来自真实卡片: 重复安装同一 Profile 时 eUICC 在 storeMetadata 阶段中止。
+    """
+    response = bytes.fromhex(
+        "BF37818ABF2744800101BF2F2F80020204810207800C19"
+        "74657374736D6470706C7573312E6578616D706C652E636F6D"
+        "5A0A989209012143658709F5"
+        "060388370A"
+        "A208A106800102810109"
+        "5F3740E42F03EE010CCE2D9508F11F6273E3AFB65EA00C477EDBF77B27BCAB5E5A9A780AA3"
+        "076D88DC4650ECA99A28255867FAEE68FCD1CA40861B633F0B31F3BC559F"
+    )
+
+    result = decode_profile_installation_result(response)
+    assert result["ok"] is False
+    assert result["transaction_id"] == "01"
+    assert result["bpp_command_id"] == 2
+    assert result["bpp_command"] == "storeMetadata"
+    assert result["error_reason"] == 9

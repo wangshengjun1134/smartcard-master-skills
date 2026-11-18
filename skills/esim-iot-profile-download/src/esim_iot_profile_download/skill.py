@@ -10,14 +10,20 @@ from smartcard_skill_sdk import (
 from .state_machine import EsimState, STATE_TRANSITIONS, INDIRECT_MODE_TRANSITIONS
 from .apdu_builder import ApduBuilder, ResponseParser
 from .asn1_codec import (
+    _iter_tlvs,
     encode_server_signed1,
     encode_bf38_authenticate_server_request,
     check_authenticate_server_response,
+    decode_authenticate_server_ok,
+    encode_application_signature,
     encode_smdp_signed2,
     encode_bf21_prepare_download_request,
     decode_prepare_download_response,
     decode_euicc_info1,
     decode_bf2e_challenge,
+    decode_profile_installation_result,
+    decode_notification_sequences,
+    decode_remove_notification_result,
     encode_bf57_add_initial_eim,
     encode_bf51_enable_psmo,
     decode_profiles_info,
@@ -36,6 +42,21 @@ def _load_ec_private_key(key_bytes: bytes):
     if key_bytes.startswith(b"-----BEGIN"):
         return serialization.load_pem_private_key(key_bytes, password=None, backend=default_backend())
     return serialization.load_der_private_key(key_bytes, password=None, backend=default_backend())
+
+
+def _der_signature_to_raw(der_signature: bytes) -> bytes:
+    """把 DER 编码的 ECDSA 签名转为 64 字节裸 r||s
+
+    SGP.22 的 serverSignature1/smdpSignature2 是 OCTET STRING(SIZE(64))，
+    即 r(32)||s(32)；cryptography 默认输出 DER SEQUENCE{r,s}，直接下发会被 eUICC 拒绝。
+    """
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+    if not der_signature or der_signature[0] != 0x30:
+        return der_signature
+
+    r, s = decode_dss_signature(der_signature)
+    return r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
 
 
 class EsimIotProfileDownloadSkill(Skill):
@@ -141,17 +162,25 @@ class EsimIotProfileDownloadSkill(Skill):
         # 处理 61XX 响应 (更多数据可用)
         # Skill 需要发送 GET RESPONSE 命令获取剩余数据
         if sw.startswith("61") and len(sw) == 4:
-            # 保存当前状态，以便在获取完整响应后继续
-            session.data["previous_state"] = current_state
-            session.data["pending_response"] = response
+            if current_state == EsimState.WAIT_GET_RESPONSE:
+                # 链式 61XX：累积数据块，保留最初被打断的状态
+                session.data["pending_response"] = session.data.get("pending_response", "") + response
+            else:
+                # 保存当前状态，以便在获取完整响应后继续
+                session.data["previous_state"] = current_state
+                session.data["pending_response"] = response
             return self._do_get_response(ctx, session, int(sw[2:], 16))
-        
+
         # 处理 91XX 响应 (eUICC 异步响应)
         # Skill 需要发送 FETCH 命令获取数据
         if sw.startswith("91") and len(sw) == 4:
-            # 保存当前状态，以便在获取完整响应后继续
-            session.data["previous_state"] = current_state
-            session.data["pending_response"] = response
+            if current_state == EsimState.WAIT_FETCH:
+                # 链式 91XX：累积数据块，保留最初被打断的状态
+                session.data["pending_response"] = session.data.get("pending_response", "") + response
+            else:
+                # 保存当前状态，以便在获取完整响应后继续
+                session.data["previous_state"] = current_state
+                session.data["pending_response"] = response
             return self._do_fetch(ctx, session, int(sw[2:], 16))
 
         sw_parsed = ResponseParser.parse_sw(sw)
@@ -175,6 +204,13 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_terminal_profile(ctx, session)
 
         elif current_state == EsimState.WAIT_TERMINAL_PROFILE:
+            return self._do_status(ctx, session)
+
+        elif current_state == EsimState.WAIT_TERMINAL_RESPONSE:
+            # TERMINAL RESPONSE 之后若还有 proactive 命令，继续 FETCH/应答
+            next_terminal = self._do_terminal_response(ctx, session, result.data.get("response", ""))
+            if next_terminal:
+                return next_terminal
             return self._do_status(ctx, session)
 
         elif current_state == EsimState.WAIT_STATUS:
@@ -207,9 +243,21 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_remove_notification(ctx, session, result)
 
         elif current_state == EsimState.WAIT_REMOVE_NOTIFICATION:
-            # RemoveNotification 完成后，进入 Profile 安装阶段
-            # 顺序与参考实现一致：先 GetEuiccChallenge（BF2E），再 GetEuiccInfo1（BF20）
-            return self._do_get_euicc_challenge(ctx, session)
+            # 校验 removeResult 后继续删除下一条（参考实现：removeResult 必须为 ok(0)）
+            response = result.data.get("response", "")
+            remove_result = -1
+            try:
+                remove_result = decode_remove_notification_result(bytes.fromhex(response))
+            except Exception:
+                pass
+            if remove_result != 0:
+                return SkillResult.failed(
+                    session.session_id,
+                    "REMOVE_NOTIFICATION_FAILED",
+                    f"RemoveNotification 失败: removeResult={remove_result} (期望 ok=0)"
+                )
+            session.data["remove_index"] = session.data.get("remove_index", 0) + 1
+            return self._do_remove_next_notification(ctx, session)
 
         elif current_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
@@ -271,7 +319,9 @@ class EsimIotProfileDownloadSkill(Skill):
                             f"卡片拒绝认证: errorCode={auth_status['error_code']} "
                             f"({auth_status['error_name']})"
                         )
-                    session.data["transaction_id"] = auth_status.get("transaction_id") or "01"
+                    auth_ok = decode_authenticate_server_ok(response_bytes)
+                    session.data["transaction_id"] = auth_ok["transaction_id"] or auth_status.get("transaction_id") or "01"
+                    session.data["euicc_signature1"] = auth_ok["euicc_signature1"].hex().upper()
                     ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
                 except Exception as e:
                     ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
@@ -318,13 +368,20 @@ class EsimIotProfileDownloadSkill(Skill):
                 session.data["pending_apdus"] = pending_apdus
                 action = self._build_apdu_action("esim.load-profile-package-continue", "加载 Profile 包(续)", next_apdu)
                 return SkillResult.continue_with(session.session_id, action)
-            
+
+            failure = self._check_installation_result(ctx, session, result.data.get("response", ""))
+            if failure:
+                return failure
             return self._do_post_install_reset(ctx, session)
 
         elif current_state == EsimState.WAIT_POST_INSTALL_RESET:
             return self._do_post_install_ic1(ctx, session)
 
         elif current_state == EsimState.WAIT_POST_INSTALL_IC1:
+            # 保存卡分配的通道号
+            response = result.data.get("response", "")
+            if len(response) >= 2:
+                session.data["post_install_channel"] = int(response[:2], 16)
             return self._do_post_install_ic2(ctx, session)
 
         elif current_state == EsimState.WAIT_POST_INSTALL_IC2:
@@ -458,6 +515,28 @@ class EsimIotProfileDownloadSkill(Skill):
         action = self._build_apdu_action("esim.terminal-profile", "设置终端配置", apdu)
         return SkillResult.continue_with(session.session_id, action)
     
+    def _do_terminal_response(self, ctx: SkillContext, session: SkillSession, fetched_hex: str) -> SkillResult:
+        """对 FETCH 到的 proactive 命令回 TERMINAL RESPONSE
+
+        fetched 为 D0xx Proactive Command TLV，取其 81 03 <Command Details> 组成
+        TERMINAL RESPONSE: 80 14 00 00 Lc 8103<details> 82 02 82 81 83 01 00
+        """
+        response_bytes = bytes.fromhex(fetched_hex) if fetched_hex else b""
+        details = None
+        inner = response_bytes[2:] if response_bytes[:1] == b'\xd0' else response_bytes
+        for field_tag, value, _ in _iter_tlvs(inner):
+            if field_tag == 0x81 and len(value) == 3:
+                details = value
+                break
+        if details is None:
+            return None
+
+        data = "8103" + details.hex().upper() + "82028281" + "830100"
+        apdu = f"80140000{len(data) // 2:02X}{data}"
+        session.data["state"] = EsimState.WAIT_TERMINAL_RESPONSE
+        action = self._build_apdu_action("esim.terminal-response", "TERMINAL RESPONSE", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
     def _do_status(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """STATUS"""
         ctx.output.text("步骤 5: 获取卡片状态")
@@ -557,6 +636,14 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_TERMINAL_CAPABILITY:
             return self._do_terminal_profile(ctx, session)
         elif previous_state == EsimState.WAIT_TERMINAL_PROFILE:
+            next_terminal = self._do_terminal_response(ctx, session, response)
+            if next_terminal:
+                return next_terminal
+            return self._do_status(ctx, session)
+        elif previous_state == EsimState.WAIT_TERMINAL_RESPONSE:
+            next_terminal = self._do_terminal_response(ctx, session, response)
+            if next_terminal:
+                return next_terminal
             return self._do_status(ctx, session)
         elif previous_state == EsimState.WAIT_STATUS:
             return self._do_manage_channel(ctx, session)
@@ -574,8 +661,19 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_LIST_NOTIFICATION:
             return self._do_remove_notification(ctx, session, mock_result)
         elif previous_state == EsimState.WAIT_REMOVE_NOTIFICATION:
-            # 顺序与参考实现一致：先 BF2E，再 BF20
-            return self._do_get_euicc_challenge(ctx, session)
+            remove_result = -1
+            try:
+                remove_result = decode_remove_notification_result(bytes.fromhex(response))
+            except Exception:
+                pass
+            if remove_result != 0:
+                return SkillResult.failed(
+                    session.session_id,
+                    "REMOVE_NOTIFICATION_FAILED",
+                    f"RemoveNotification 失败: removeResult={remove_result} (期望 ok=0)"
+                )
+            session.data["remove_index"] = session.data.get("remove_index", 0) + 1
+            return self._do_remove_next_notification(ctx, session)
         elif previous_state == EsimState.WAIT_GET_EUICC_CHALLENGE:
             # 保存挑战值，然后获取 EuiccInfo1
             try:
@@ -610,7 +708,8 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_authenticate_server(ctx, session)
         elif previous_state == EsimState.WAIT_AUTHENTICATE_SERVER:
             try:
-                auth_status = check_authenticate_server_response(bytes.fromhex(response))
+                response_bytes = bytes.fromhex(response)
+                auth_status = check_authenticate_server_response(response_bytes)
                 if not auth_status["ok"]:
                     return SkillResult.failed(
                         session.session_id,
@@ -618,7 +717,9 @@ class EsimIotProfileDownloadSkill(Skill):
                         f"卡片拒绝认证: errorCode={auth_status['error_code']} "
                         f"({auth_status['error_name']})"
                     )
-                session.data["transaction_id"] = auth_status.get("transaction_id") or "01"
+                auth_ok = decode_authenticate_server_ok(response_bytes)
+                session.data["transaction_id"] = auth_ok["transaction_id"] or auth_status.get("transaction_id") or "01"
+                session.data["euicc_signature1"] = auth_ok["euicc_signature1"].hex().upper()
                 ctx.output.text(f"认证成功, transaction_id={session.data['transaction_id']}")
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 AuthenticateServer 响应: {e}")
@@ -634,10 +735,15 @@ class EsimIotProfileDownloadSkill(Skill):
                 ctx.output.text(f"警告: 无法解析 PrepareDownload 响应: {e}")
             return self._do_load_profile_package(ctx, session)
         elif previous_state == EsimState.WAIT_LOAD_PROFILE_PACKAGE:
+            failure = self._check_installation_result(ctx, session, response)
+            if failure:
+                return failure
             return self._do_post_install_reset(ctx, session)
         elif previous_state == EsimState.WAIT_POST_INSTALL_RESET:
             return self._do_post_install_ic1(ctx, session)
         elif previous_state == EsimState.WAIT_POST_INSTALL_IC1:
+            if len(response) >= 2:
+                session.data["post_install_channel"] = int(response[:2], 16)
             return self._do_post_install_ic2(ctx, session)
         elif previous_state == EsimState.WAIT_POST_INSTALL_IC2:
             return self._do_post_install_select_isdr(ctx, session)
@@ -679,28 +785,42 @@ class EsimIotProfileDownloadSkill(Skill):
         return SkillResult.continue_with(session.session_id, action)
 
     def _do_remove_notification(self, ctx: SkillContext, session: SkillSession, result: ActionResult) -> SkillResult:
-        """RemoveNotification - 删除通知"""
+        """RemoveNotification - 删除通知（逐个删除全部安装类通知）"""
         ctx.output.text("步骤 7.4: 清理 - 删除通知")
         session.data["state"] = EsimState.WAIT_REMOVE_NOTIFICATION
 
-        # 解析 ListNotification 响应，获取通知序号
         response = result.data.get("response", "")
 
-        # 如果没有通知，直接跳过（保持参考实现顺序：先 GetEuiccChallenge）
-        if not response or response == "":
+        # 解析 RetrieveNotificationsList 响应，收集全部 seqNumber
+        sequences = []
+        if response:
+            try:
+                sequences = decode_notification_sequences(bytes.fromhex(response))
+            except Exception as e:
+                ctx.output.text(f"警告: 无法解析通知列表: {e}")
+
+        if not sequences:
             ctx.output.text("无待处理通知")
             return self._do_get_euicc_challenge(ctx, session)
 
-        # 解析通知序号（简化处理，实际应解析 ASN.1）
-        # 假设响应格式为 BF28048002XXXX，其中 XXXX 是序号
-        sequence = "0001"  # 默认序号
+        session.data["remove_sequences"] = sequences
+        session.data["remove_index"] = 0
+        return self._do_remove_next_notification(ctx, session)
 
-        # 尝试从响应中提取序号
-        if len(response) >= 8:
-            # 查找 8002 标签后的序号
-            idx = response.find("8002")
-            if idx >= 0 and idx + 8 <= len(response):
-                sequence = response[idx + 4:idx + 8]
+    def _do_remove_next_notification(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """发送下一条 RemoveNotification；全部完成后进入 Profile 安装阶段"""
+        sequences = session.data.get("remove_sequences", [])
+        index = session.data.get("remove_index", 0)
+
+        if index >= len(sequences):
+            session.data.pop("remove_sequences", None)
+            session.data.pop("remove_index", None)
+            ctx.output.text("通知清理完成")
+            return self._do_get_euicc_challenge(ctx, session)
+
+        session.data["state"] = EsimState.WAIT_REMOVE_NOTIFICATION
+        sequence = sequences[index]
+        ctx.output.text(f"删除通知 seq={sequence} ({index + 1}/{len(sequences)})")
 
         channel = session.data.get("channel", 0)
         apdu = ApduBuilder.remove_notification(sequence, channel=channel)
@@ -739,8 +859,10 @@ class EsimIotProfileDownloadSkill(Skill):
 
         # 从会话数据中获取参数
         params = session.data.get("params", {})
-        matching_id = params.get("matching_id", "")
+        # 参考实现不在 ctxParams1 内携带 matchingId（由 SM-DP+ 侧按激活码匹配）
+        matching_id = params.get("matching_id_in_auth", "")
         tac = bytes.fromhex(params.get("tac", "00000000"))
+        device_identifier = bytes.fromhex(params.get("imei", "0000000011111111"))
 
         # eUICC 挑战值（16 字节）
         challenge_hex = session.data.get("challenge", "")
@@ -790,9 +912,9 @@ class EsimIotProfileDownloadSkill(Skill):
 
                 # 对完整的 ServerSigned1 DER 数据签名
                 signature = private_key.sign(server_signed1, ec.ECDSA(hashes.SHA256()))
-                server_signature1 = signature
+                server_signature1 = _der_signature_to_raw(signature)
 
-                ctx.output.text(f"签名成功，签名长度: {len(signature)} 字节")
+                ctx.output.text(f"签名成功，签名长度: {len(server_signature1)} 字节")
         except Exception as e:
             ctx.output.text(f"警告: 签名失败，使用占位数据 - {e}")
             server_signature1 = bytes(64)  # 占位签名
@@ -807,7 +929,8 @@ class EsimIotProfileDownloadSkill(Skill):
                 euicc_ci_pk_id=bytes.fromhex(euicc_ci_pk_id) if isinstance(euicc_ci_pk_id, str) else euicc_ci_pk_id,
                 server_certificate=server_certificate,
                 matching_id=matching_id,
-                tac=tac
+                tac=tac,
+                device_identifier=device_identifier
             )
             auth_data_hex = auth_data.hex().upper()
         except Asn1CodecError as e:
@@ -863,11 +986,15 @@ class EsimIotProfileDownloadSkill(Skill):
                 private_key_bytes = bytes.fromhex(dp_pb_key_hex)
                 private_key = _load_ec_private_key(private_key_bytes)
 
-                # 签名数据 = smdp_signed2
-                signature = private_key.sign(smdp_signed2, ec.ECDSA(hashes.SHA256()))
-                smdp_signature2 = signature
+                # 签名输入 = smdpSigned2 || [APPLICATION 55] euiccSignature1
+                euicc_signature1_hex = session.data.get("euicc_signature1", "")
+                signature_input = smdp_signed2 + encode_application_signature(
+                    bytes.fromhex(euicc_signature1_hex)
+                )
+                signature = private_key.sign(signature_input, ec.ECDSA(hashes.SHA256()))
+                smdp_signature2 = _der_signature_to_raw(signature)
 
-                ctx.output.text(f"PrepareDownload 签名成功，签名长度: {len(signature)} 字节")
+                ctx.output.text(f"PrepareDownload 签名成功，签名长度: {len(smdp_signature2)} 字节")
         except Exception as e:
             ctx.output.text(f"警告: PrepareDownload 签名失败，使用占位数据 - {e}")
             smdp_signature2 = bytes(64)  # 占位签名
@@ -952,9 +1079,11 @@ class EsimIotProfileDownloadSkill(Skill):
                     profile_package=bytes.fromhex(package_data),
                     iccid=iccid,
                     profile_id=profile_id,
-                    profile_name="Test Profile",
+                    profile_name=params.get("profile_name", "Operational Profile Name 1"),
                     dp_pb_private_key_pem=bytes.fromhex(dp_pb_key),
-                    dp_pb_cert_der=bytes.fromhex(dp_pb_cert)
+                    dp_pb_cert_der=bytes.fromhex(dp_pb_cert),
+                    service_provider_name=params.get("spn", "SP Name 1"),
+                    profile_class=int(params.get("profile_class", 2))
                 )
                 bpp_hex = bpp_bytes.hex().upper()
                 ctx.output.text(f"BPP 生成成功，长度: {len(bpp_bytes)} 字节")
@@ -982,6 +1111,34 @@ class EsimIotProfileDownloadSkill(Skill):
     
     # ========== 后安装处理 ==========
     
+    def _check_installation_result(self, ctx: SkillContext, session: SkillSession, response_hex: str):
+        """检查 ProfileInstallationResult (BF37)
+
+        Returns:
+            None 表示安装成功或响应不含 BF37；否则返回 FAILED 的 SkillResult
+        """
+        if not response_hex or not response_hex.upper().startswith("BF37"):
+            return None
+
+        try:
+            pir = decode_profile_installation_result(bytes.fromhex(response_hex))
+        except Exception as e:
+            ctx.output.text(f"警告: 无法解析 ProfileInstallationResult: {e}")
+            return None
+
+        if pir["ok"]:
+            session.data["profile_installation_result"] = pir
+            ctx.output.text("Profile 安装成功 (ProfileInstallationResult = success)")
+            return None
+
+        session.data["state"] = EsimState.FAILED
+        return SkillResult.failed(
+            session.session_id,
+            "PROFILE_INSTALLATION_FAILED",
+            f"Profile 安装失败: bppCommand={pir['bpp_command'] or '?'}({pir['bpp_command_id']}) "
+            f"errorReason={pir['error_reason']} ({pir['error_name']})"
+        )
+
     def _do_post_install_reset(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """后安装冷复位"""
         ctx.output.text("步骤 13: 后安装冷复位")
@@ -997,31 +1154,24 @@ class EsimIotProfileDownloadSkill(Skill):
         return SkillResult.continue_with(session.session_id, action)
     
     def _do_post_install_ic1(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
-        """IC1 (Initialize Channel 1)"""
-        ctx.output.text("步骤 14: 初始化通道 1")
+        """IC1: 冷复位后重新打开逻辑通道（由卡分配通道号）"""
+        ctx.output.text("步骤 14: 初始化通道")
         session.data["state"] = EsimState.WAIT_POST_INSTALL_IC1
-        
-        # IC1 通常是 MANAGE CHANNEL + SELECT
-        apdu = ApduBuilder.manage_channel(mode=0x00, channel=1)
-        action = self._build_apdu_action("esim.post-install-ic1", "初始化通道 1", apdu)
+
+        apdu = ApduBuilder.manage_channel(mode=0x00, channel=0)
+        action = self._build_apdu_action("esim.post-install-ic1", "初始化通道", apdu)
         return SkillResult.continue_with(session.session_id, action)
-    
+
     def _do_post_install_ic2(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
-        """IC2 (Initialize Channel 2)"""
-        ctx.output.text("步骤 15: 初始化通道 2")
-        session.data["state"] = EsimState.WAIT_POST_INSTALL_IC2
-        
-        apdu = ApduBuilder.manage_channel(mode=0x00, channel=2)
-        action = self._build_apdu_action("esim.post-install-ic2", "初始化通道 2", apdu)
-        return SkillResult.continue_with(session.session_id, action)
-    
+        """IC2: 通道已就绪，直接选择 ISD-R"""
+        return self._do_post_install_select_isdr(ctx, session)
+
     def _do_post_install_select_isdr(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """后安装 SELECT ISD-R"""
         ctx.output.text("步骤 16: 重新选择 ISD-R")
         session.data["state"] = EsimState.WAIT_POST_INSTALL_SELECT_ISDR
 
-        # 后安装阶段使用通道 2 (IC2)
-        channel = session.data.get("post_install_channel", 2)
+        channel = session.data.get("post_install_channel", 1)
         apdu = ApduBuilder.select_isdr(channel=channel)
         action = self._build_apdu_action("esim.post-install-select-isdr", "选择 ISD-R", apdu)
         return SkillResult.continue_with(session.session_id, action)
@@ -1031,8 +1181,7 @@ class EsimIotProfileDownloadSkill(Skill):
         ctx.output.text("步骤 17: 获取 Profile 信息")
         session.data["state"] = EsimState.WAIT_GET_PROFILES_INFO
 
-        # 使用通道 2 (IC2)
-        channel = session.data.get("post_install_channel", 2)
+        channel = session.data.get("post_install_channel", 1)
         apdu = ApduBuilder.get_profiles_info(channel=channel)
         action = self._build_apdu_action("esim.get-profiles-info", "获取 Profile 信息", apdu)
         return SkillResult.continue_with(session.session_id, action)

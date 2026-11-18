@@ -49,6 +49,47 @@ def _der_tlv(tag_bytes: bytes, value: bytes) -> bytes:
     return tag_bytes + _der_len(len(value)) + value
 
 
+def _tlv_header(tag: int, length: int) -> bytes:
+    """构造单字节 tag 的 BER-TLV 头部"""
+    if length < 0x80:
+        return bytes([tag, length])
+    if length <= 0xFF:
+        return bytes([tag, 0x81, length])
+    return bytes([tag, 0x82, (length >> 8) & 0xFF, length & 0xFF])
+
+
+def _iso7816_pad(data: bytes) -> bytes:
+    """ISO/IEC 7816-4 填充：追加 0x80 后补 0x00 至 16 字节整数倍"""
+    padding = 16 - (len(data) % 16)
+    return data + b'\x80' + bytes(padding - 1)
+
+
+def _aes_ecb_encrypt(key: bytes, data: bytes) -> bytes:
+    """AES-128 ECB 加密（无填充）"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    return encryptor.update(data) + encryptor.finalize()
+
+
+def _aes_cbc_encrypt(key: bytes, data: bytes, iv: bytes) -> bytes:
+    """AES-128 CBC 加密（无填充）"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    return encryptor.update(data) + encryptor.finalize()
+
+
+def _aes_cmac(key: bytes, data: bytes) -> bytes:
+    """AES-128 CMAC（输出完整 16 字节）"""
+    from cryptography.hazmat.primitives.cmac import CMAC
+    from cryptography.hazmat.primitives.ciphers import algorithms
+
+    cmac = CMAC(algorithms.AES(key), backend=default_backend())
+    cmac.update(data)
+    return cmac.finalize()
+
+
 # ========== BF38 AuthenticateServerRequest ==========
 
 def encode_server_signed1(
@@ -98,34 +139,34 @@ def encode_bf38_authenticate_server_request(
     euicc_ci_pk_id: bytes,
     server_certificate: bytes,
     matching_id: str,
-    tac: bytes
+    tac: bytes,
+    device_identifier: bytes = b'\x00\x00\x00\x00\x11\x11\x11\x11'
 ) -> bytes:
     """
     编码 AuthenticateServerRequest (BF38)
-    
+
     结构:
     - ServerSigned1: 已编码的签名数据
     - serverSignature1: [55] 签名
     - euiccCiPkIdToBeUsed: OCTET STRING
     - serverCertificate: 证书
-    - ctxParams1: [0] matchingId, [1] deviceInfo
+    - ctxParams1: [0] { [0] matchingId, [1] deviceInfo }
+      deviceInfo = [0] tac, [1] deviceCapabilities, [2] deviceIdentifier
     """
     if len(tac) != 4:
         raise Asn1CodecError("TAC must be 4 bytes")
-    
-    # deviceCapabilities: 8 个 [n] OCTET STRING
+
+    # deviceCapabilities: 8 个 [n] OCTET STRING（固定向量，空 SEQUENCE 会被真卡拒绝）
     caps = [
         b'\x05\x00\x00', b'\x08\x00\x00', b'\x01\x00\x00', b'\x01\x00\x00',
         b'\x02\x00\x00', b'\x02\x00\x00', b'\x09\x00\x00', b'\x02\x01\x00',
     ]
     caps_seq = b''.join(_der_tlv(bytes([0x80 | i]), c) for i, c in enumerate(caps))
 
-    # deviceInfo: [0] tac, [1] deviceCapabilities
-    # 注意：不包含 deviceIdentifier [2]（IMEI 为 Octet32，默认省略）
-    device = (
-        _der_tlv(b'\x80', tac)
-        + _der_tlv(b'\xa1', caps_seq)
-    )
+    # deviceInfo: [0] tac, [1] deviceCapabilities, [2] deviceIdentifier(IMEI)
+    device = _der_tlv(b'\x80', tac) + _der_tlv(b'\xa1', caps_seq)
+    if device_identifier:
+        device += _der_tlv(b'\x82', device_identifier)
 
     # context: [0] matchingId, [1] deviceInfo
     context = b''
@@ -232,6 +273,233 @@ def check_authenticate_server_response(response: bytes) -> Dict[str, Any]:
             result["error_name"] = _AUTH_ERROR_NAMES.get(code, f"unknown({code})")
 
     return result
+
+
+def _read_tlv(data: bytes, offset: int):
+    """读取一个 BER TLV，返回 (tag, value, next_offset)"""
+    if offset + 2 > len(data):
+        return None, b"", len(data)
+
+    first = data[offset]
+    offset += 1
+    if (first & 0x1F) == 0x1F:
+        if offset >= len(data):
+            return None, b"", len(data)
+        tag = (first << 8) | data[offset]
+        offset += 1
+    else:
+        tag = first
+
+    if offset >= len(data):
+        return None, b"", len(data)
+    lb = data[offset]
+    offset += 1
+    if lb & 0x80:
+        n = lb & 0x7F
+        if n == 0 or offset + n > len(data):
+            return None, b"", len(data)
+        length = int.from_bytes(data[offset:offset + n], 'big')
+        offset += n
+    else:
+        length = lb
+
+    end = offset + length
+    if end > len(data):
+        end = len(data)
+    return tag, data[offset:end], end
+
+
+def decode_authenticate_server_ok(response: bytes) -> Dict[str, Any]:
+    """解析 BF38 的成功分支 (authenticateResponseOk)，提取后续签名所需字段
+
+    结构:
+    BF38 { A0 { SEQUENCE { euiccSigned1, 5F37 euiccSignature1,
+                          euiccCertificate, eumCertificate } } }
+
+    Returns:
+        {"ok", "transaction_id", "euicc_signed1", "euicc_signature1",
+         "euicc_certificate", "eum_certificate"}
+    """
+    result = {
+        "ok": False,
+        "transaction_id": "",
+        "euicc_signed1": b"",
+        "euicc_signature1": b"",
+        "euicc_certificate": b"",
+        "eum_certificate": b"",
+    }
+
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF38:
+        return result
+
+    tag, a0_body, _ = _read_tlv(body, 0)
+    if tag != 0xA0:
+        return result
+
+    # A0 为 EXPLICIT 标记，内容通常是 euiccSigned1 的 SEQUENCE
+    tag, inner, nxt = _read_tlv(a0_body, 0)
+    if tag == 0x30:
+        signed1 = a0_body[0:nxt]
+        result["euicc_signed1"] = signed1
+        for field_tag, value, _ in _iter_tlvs(inner):
+            if field_tag == 0x80:
+                result["transaction_id"] = value.hex().upper()
+                break
+        a0_body = a0_body[nxt:]
+
+    for field_tag, value, raw in _iter_tlvs(a0_body):
+        if field_tag == 0x5F37:
+            result["euicc_signature1"] = value
+        elif field_tag == 0x30 and not result["euicc_certificate"]:
+            result["euicc_certificate"] = raw
+        elif field_tag == 0x30 and not result["eum_certificate"]:
+            result["eum_certificate"] = raw
+
+    result["ok"] = bool(result["euicc_signature1"])
+    return result
+
+
+def _iter_tlvs(data: bytes):
+    """顺序遍历 TLV，产出 (tag, value, raw_tlv)"""
+    offset = 0
+    while offset < len(data):
+        tag, value, nxt = _read_tlv(data, offset)
+        if tag is None or nxt <= offset:
+            return
+        yield tag, value, data[offset:nxt]
+        offset = nxt
+
+
+def encode_application_signature(signature: bytes) -> bytes:
+    """编码 [APPLICATION 55] OCTET STRING (5F37)，即 euiccSignature1 的 ASN.1 形式"""
+    return _der_tlv(b'\x5f\x37', signature)
+
+
+_BPP_COMMAND_NAMES = {
+    0: "initialiseSecureChannel",
+    1: "configureISDP",
+    2: "storeMetadata",
+    3: "replaceSessionKeys",
+    4: "loadProfileElements",
+}
+
+_PIR_ERROR_REASONS = {
+    1: "incorrectInputValues",
+    2: "invalidSignature",
+    3: "invalidTransactionId",
+    4: "unsupportedCrtValues",
+    5: "unsupportedRemoteOperationType",
+    6: "unsupportedProfileClass",
+    7: "scp03tStructureError",
+    8: "scp03tSecurityError",
+    9: "installFailedDueToInsufficientMemory",
+    10: "installFailedDueToInterruption",
+    127: "undefinedError",
+}
+
+
+def decode_profile_installation_result(response: bytes) -> Dict[str, Any]:
+    """解析 ProfileInstallationResult (BF37)
+
+    BF37 { BF27 { [0] transactionId, BF2F notificationMetadata, OID,
+                  [2] finalResult { [0] successResult | [1] errorResult } },
+           5F37 euiccSignPIR }
+
+    Returns:
+        {"ok", "transaction_id", "bpp_command_id", "bpp_command",
+         "error_reason", "error_name"}
+    """
+    result = {
+        "ok": False,
+        "transaction_id": "",
+        "bpp_command_id": None,
+        "bpp_command": "",
+        "error_reason": None,
+        "error_name": "",
+    }
+
+    tag, bf37_body, _ = _read_tlv(response, 0)
+    if tag != 0xBF37:
+        result["error_name"] = "not BF37"
+        return result
+
+    bf27_body = None
+    for field_tag, value, _ in _iter_tlvs(bf37_body):
+        if field_tag == 0xBF27:
+            bf27_body = value
+            break
+    if bf27_body is None:
+        result["error_name"] = "no BF27"
+        return result
+
+    final_result = None
+    for field_tag, value, _ in _iter_tlvs(bf27_body):
+        if field_tag == 0x80:
+            result["transaction_id"] = value.hex().upper()
+        elif field_tag == 0xA2:
+            final_result = value
+
+    if final_result is None:
+        result["error_name"] = "no finalResult"
+        return result
+
+    choice_tag, choice_body, _ = _read_tlv(final_result, 0)
+    if choice_tag == 0xA0:
+        result["ok"] = True
+        return result
+    if choice_tag != 0xA1:
+        result["error_name"] = f"unknown finalResult tag 0x{choice_tag:02X}"
+        return result
+
+    for field_tag, value, _ in _iter_tlvs(choice_body):
+        if field_tag == 0x80 and value:
+            code = int.from_bytes(value, 'big')
+            result["bpp_command_id"] = code
+            result["bpp_command"] = _BPP_COMMAND_NAMES.get(code, f"unknown({code})")
+        elif field_tag == 0x81 and value:
+            code = int.from_bytes(value, 'big')
+            result["error_reason"] = code
+            result["error_name"] = _PIR_ERROR_REASONS.get(code, f"unknown({code})")
+
+    return result
+
+
+def decode_notification_sequences(response: bytes) -> list:
+    """解析 RetrieveNotificationsListResponse (BF2B)，提取所有通知的 seqNumber
+
+    递归扫描 BF2F (notificationMetadata)，取其直接子字段 tag=0x80 且长度为 1/2 的值，
+    保留卡返回的原始长度（部分卡用单字节 80 01 xx，部分用双字节 80 02 xx xx）。
+    """
+    sequences = []
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF2B:
+        return sequences
+
+    def scan(data: bytes):
+        for field_tag, value, _ in _iter_tlvs(data):
+            if field_tag == 0xBF2F:
+                for meta_tag, meta_value, _ in _iter_tlvs(value):
+                    if meta_tag == 0x80 and len(meta_value) in (1, 2):
+                        sequences.append(meta_value.hex().upper())
+            elif field_tag in (0xBF37, 0xBF27, 0xA0, 0x30, 0xBF2B):
+                scan(value)
+            elif field_tag in (0xE3, 0xE7):
+                scan(value)
+
+    scan(body)
+    return sequences
+
+
+def decode_remove_notification_result(response: bytes) -> int:
+    """解析 RemoveNotificationResponse (BF30)，返回 removeResult（0 = ok）"""
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF30:
+        return -1
+    for field_tag, value, _ in _iter_tlvs(body):
+        if field_tag == 0x80 and value:
+            return int.from_bytes(value, 'big')
+    return -1
 
 
 # ========== SmdpSigned2 ==========
@@ -728,30 +996,36 @@ class BPPGenerator:
             smdp_otpk,
             euicc_otpk
         )
-        
+        # SCP03t 是有状态的：87 → 88 → 86 共用同一个计数器/MCV 链
+        self._scp03t_state = {'counter': 1, 'mcv': session_keys['mcv']}
+
         # 4. 构造 ConfigureISDP (87)
         configure_isdp = self._encode_configure_isdp(profile_package)
         first_87 = self._scp03t_protect(0x87, configure_isdp, session_keys)
-        
+
         # 5. 构造 StoreMetadata (88)
         metadata = self._encode_store_metadata(
             iccid, service_provider_name, profile_name, profile_class
         )
         sequence_88 = self._scp03t_protect(0x88, metadata, session_keys)
-        
-        # 6. 构造 sequenceOf86 (Profile 数据)
-        sequence_86 = self._scp03t_protect(0x86, profile_package, session_keys)
-        
+
+        # 6. 构造 sequenceOf86（Profile 数据，每段最多 1007 字节明文）
+        max_plaintext_segment = 1007
+        sequence_86 = b""
+        for offset in range(0, len(profile_package), max_plaintext_segment):
+            segment = profile_package[offset:offset + max_plaintext_segment]
+            sequence_86 += self._scp03t_protect(0x86, segment, session_keys)
+
         # 7. 构造 BF23 (initialiseSecureChannelRequest)
         bf23 = self._encode_bf23(
             transaction_id,
             smdp_otpk,
             euicc_otpk
         )
-        
+
         # 8. 组装 BPP
         bpp = self._assemble_bpp(bf23, first_87, sequence_88, sequence_86)
-        
+
         return bpp
     
     def _generate_bpp_simplified(
@@ -867,30 +1141,45 @@ class BPPGenerator:
         smdp_otpk: bytes,
         euicc_otpk: bytes
     ) -> Dict[str, bytes]:
-        """派生 SCP03t 会话密钥
-        
-        使用简化的密钥派生函数 (KDF)
+        """派生 SCP03t 会话密钥 (SGP.22 Annex G / X9.63 KDF-SHA256)
+
+        sharedInfo = keyType(0x88) || keyLength(0x10) || len(hostId) || hostId
+                     || len(eid) || eid
+        KDF 输出 48 字节: MCV(16) || S-ENC(16) || S-MAC(16)
         """
-        # 简化的 KDF：使用 SHA-256 派生密钥
-        kdf_input = shared_secret + host_id + eid + smdp_otpk + euicc_otpk
-        
-        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
-        digest.update(kdf_input)
-        derived = digest.finalize()
-        
-        # 派生 3 个 16 字节密钥
+        key_type = 0x88
+        key_length = 0x10
+        shared_info = (
+            bytes([key_type, key_length, len(host_id)]) + host_id
+            + bytes([len(eid)]) + eid
+        )
+
+        kdf_output = b""
+        counter = 1
+        while len(kdf_output) < 48:
+            digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
+            digest.update(shared_secret)
+            digest.update(counter.to_bytes(4, 'big'))
+            digest.update(shared_info)
+            kdf_output += digest.finalize()
+            counter += 1
+
         return {
-            's_enc': derived[:16],
-            's_cmac': derived[16:32],
-            's_rmac': derived[0:16]  # 简化：使用相同的前 16 字节
+            'mcv': kdf_output[0:16],
+            's_enc': kdf_output[16:32],
+            's_mac': kdf_output[32:48],
         }
-    
+
     def _encode_configure_isdp(self, profile_package: bytes) -> bytes:
-        """编码 ConfigureISDP 命令"""
-        # 简化的 ConfigureISDP：只包含必要字段
-        # 实际应该包含更多配置参数
-        return b'\x80\x01\x01'  # 简化的配置数据
-    
+        """编码 ConfigureISDPRequest (BF24)
+
+        BF24 { B8 <dpProprietaryData> }，dpProprietaryData 取
+        #SMDP_PROP_DATA 宏值 80 03 88 37 0A（与参考报告一致）。
+        """
+        dp_proprietary_data = bytes.fromhex("800388370A")
+        body = _der_tlv(b'\xb8', dp_proprietary_data)
+        return _der_tlv(b'\xbf\x24', body)
+
     def _encode_store_metadata(
         self,
         iccid: str,
@@ -898,46 +1187,54 @@ class BPPGenerator:
         profile_name: str,
         profile_class: int
     ) -> bytes:
-        """编码 StoreMetadata 命令"""
-        # ICCID (80)
-        iccid_bytes = bytes.fromhex(iccid) if len(iccid) % 2 == 0 else bytes.fromhex(iccid + 'F')
-        iccid_field = _der_tlv(b'\x80', iccid_bytes)
-        
-        # Service Provider Name (82)
-        spn_field = _der_tlv(b'\x82', service_provider_name.encode('utf-8'))
-        
-        # Profile Name (90)
-        pn_field = _der_tlv(b'\x90', profile_name.encode('utf-8'))
-        
-        # Profile Class (95)
-        pc_field = _der_tlv(b'\x95', bytes([profile_class]))
-        
-        content = iccid_field + spn_field + pn_field + pc_field
-        return content
-    
-    def _scp03t_protect(self, tag: int, data: bytes, keys: Dict[str, bytes]) -> bytes:
-        """SCP03t 保护数据
-        
-        简化的 SCP03t 实现：
-        - 使用 AES-128-CMAC 计算 MAC
-        - 使用 AES-128 加密数据
+        """编码 StoreMetadataRequest (BF25)
+
+        BF25 { 5A iccid, 91 serviceProviderName, 92 profileName, 95 profileClass }
+        ICCID 为 BCD（半字节交换）编码。
         """
-        # 简化的 SCP03t：只计算 MAC，不加密
-        # 实际应该使用完整的 SCP03t 协议
-        
-        # 计算 CMAC
-        from cryptography.hazmat.primitives.cmac import CMAC
-        from cryptography.hazmat.primitives.ciphers import algorithms
-        
-        cmac = CMAC(algorithms.AES(keys['s_cmac']), backend=default_backend())
-        cmac.update(data)
-        mac = cmac.finalize()[:8]  # 取前 8 字节作为 MAC
-        
-        # 构造受保护的数据块
-        # 格式: tag + length + data + mac
-        protected = bytes([tag]) + self._encode_ber_len(len(data) + 8) + data + mac
-        
-        return protected
+        digits = iccid.replace(" ", "").upper().rstrip("F")
+        if len(digits) % 2:
+            digits += "F"
+        iccid_bytes = bytearray()
+        for i in range(0, len(digits), 2):
+            low = int(digits[i], 16)
+            high = int(digits[i + 1], 16)
+            iccid_bytes.append((high << 4) | low)
+
+        content = (
+            _der_tlv(b'\x5a', bytes(iccid_bytes))
+            + _der_tlv(b'\x91', service_provider_name.encode('utf-8'))
+            + _der_tlv(b'\x92', profile_name.encode('utf-8'))
+            + _der_tlv(b'\x95', bytes([profile_class]))
+        )
+        return _der_tlv(b'\xbf\x25', content)
+
+    def _scp03t_protect(self, tag: int, data: bytes, keys: Dict[str, bytes]) -> bytes:
+        """SCP03t 保护一个 BPP 数据块（86/87/88）
+
+        - 计数器从 1 递增，ICV = AES-ECB(S-ENC, counter_block)
+        - tag 0x88（元数据）不加密，其余用 AES-CBC + ISO7816 填充加密
+        - C-MAC = CMAC(S-MAC, MCV || 头部 || 受保护数据)，MCV 用完整 16 字节 MAC 链式更新
+        - 输出 = 头部 || 加密数据 || MAC 前 8 字节
+        """
+        state = self._scp03t_state
+        counter = state['counter']
+        state['counter'] = counter + 1
+
+        counter_block = bytes(12) + counter.to_bytes(4, 'big')
+        icv = _aes_ecb_encrypt(keys['s_enc'], counter_block)
+
+        if tag == 0x88:
+            protected_data = data
+        else:
+            protected_data = _aes_cbc_encrypt(keys['s_enc'], _iso7816_pad(data), icv)
+
+        header = _tlv_header(tag, len(protected_data) + 8)
+        mac_input = state['mcv'] + header + protected_data
+        full_mac = _aes_cmac(keys['s_mac'], mac_input)
+        state['mcv'] = full_mac
+
+        return header + protected_data + full_mac[:8]
     
     def _encode_bf23(
         self,
@@ -945,30 +1242,48 @@ class BPPGenerator:
         smdp_otpk: bytes,
         euicc_otpk: bytes
     ) -> bytes:
-        """编码 BF23 (initialiseSecureChannelRequest)"""
-        # remoteOperation [2]
-        remote_op = _der_tlv(b'\xa2', b'\x02\x01\x01')  # INTEGER 1
-        
-        # transactionId [0]
-        tid_bytes = bytes.fromhex(transaction_id)
-        tid_field = _der_tlv(b'\xa0', tid_bytes)
-        
-        # controlReferenceTemplate [6]
+        """编码 BF23 (initialiseSecureChannelRequest)
+
+        结构 (SGP.22 5.7.5):
+        BF23 {
+          [2] INTEGER 1                       remoteOpId = installBoundProfilePackage
+          [0] OCTET STRING                    transactionId
+          [6] SEQUENCE {                      controlInitializationData
+                [0] keyType, [1] keyLength(0x10), [4] hostId }
+          5F49 OCTET STRING                   smdpOtpk
+          5F37 OCTET STRING                   smdpSignature
+        }
+        smdpSignature 覆盖 remoteOpId || transactionId || controlInitializationData
+                               || 5F49(smdpOtpk) || 5F49(euiccOtpk)
+        """
+        remote_op = _der_tlv(b'\x82', b'\x01')
+        tid_field = _der_tlv(b'\x80', bytes.fromhex(transaction_id))
+
         crt_content = (
-            _der_tlv(b'\x80', b'\x01') +  # 算法标识
-            _der_tlv(b'\x81', b'\x10') +  # 密钥长度
-            _der_tlv(b'\x84', self.TEST_HOST_ID)  # Host ID
+            _der_tlv(b'\x80', b'\x88')   # keyType = AES-128
+            + _der_tlv(b'\x81', b'\x10')  # keyLength = 128 bit
+            + _der_tlv(b'\x84', self.TEST_HOST_ID)
         )
         crt_field = _der_tlv(b'\xa6', crt_content)
-        
-        # smdpPublic [73] (SM-DP+ 一次性公钥)
-        smdp_public = _der_tlv(b'\x86', smdp_otpk)  # 简化：使用 OCTET STRING
-        
-        # 签名 (简化：使用空签名)
-        signature = _der_tlv(b'\x87', b'\x00' * 64)
-        
+
+        smdp_public = _der_tlv(b'\x5f\x49', smdp_otpk)
+        euicc_public = _der_tlv(b'\x5f\x49', euicc_otpk)
+
+        signed_data = remote_op + tid_field + crt_field + smdp_public + euicc_public
+        raw_signature = self._der_signature_to_raw(signed_data)
+        signature = _der_tlv(b'\x5f\x37', raw_signature)
+
         content = remote_op + tid_field + crt_field + smdp_public + signature
         return _der_tlv(b'\xbf\x23', content)
+
+    def _der_signature_to_raw(self, signed_data: bytes) -> bytes:
+        """用 DP+ Profile Binding 私钥签名，返回 64 字节裸 r||s"""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+        der = self.dp_pb_private_key.sign(signed_data, ec.ECDSA(hashes.SHA256()))
+        r, s = utils.decode_dss_signature(der)
+        return r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
     
     def _assemble_bpp(
         self,
@@ -1012,10 +1327,12 @@ def generate_bpp(
     profile_id: str,
     profile_name: str,
     dp_pb_private_key_pem: bytes,
-    dp_pb_cert_der: bytes
+    dp_pb_cert_der: bytes,
+    service_provider_name: str = "Test Operator",
+    profile_class: int = 2
 ) -> bytes:
     """生成 Bound Profile Package 的便捷函数
-    
+
     Args:
         transaction_id: 事务 ID (十六进制字符串)
         eid: eUICC EID
@@ -1026,7 +1343,9 @@ def generate_bpp(
         profile_name: Profile 名称
         dp_pb_private_key_pem: DP+ Profile Binding 私钥 (PEM 格式)
         dp_pb_cert_der: DP+ Profile Binding 证书 (DER 格式)
-        
+        service_provider_name: 服务提供商名称（写入 StoreMetadata）
+        profile_class: Profile 类别（写入 StoreMetadata）
+
     Returns:
         BPP 数据 (DER 编码)
     """
@@ -1038,5 +1357,7 @@ def generate_bpp(
         profile_package=profile_package,
         iccid=iccid,
         profile_id=profile_id,
-        profile_name=profile_name
+        profile_name=profile_name,
+        service_provider_name=service_provider_name,
+        profile_class=profile_class
     )

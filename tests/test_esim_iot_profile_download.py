@@ -106,28 +106,24 @@ def test_apdu_builder_get_profiles_info():
 
 
 def test_apdu_builder_euicc_memory_reset():
-    """测试 EuiccMemoryReset APDU"""
+    """测试 EuiccMemoryReset APDU (SGP.32 BF64)"""
     apdu = ApduBuilder.euicc_memory_reset()
-    # 80 E2 91 00 07 BF3404820205E0 00
-    assert apdu.startswith("80E29100")
-    assert "BF34" in apdu
+    # 80 E2 91 00 07 BF64 04 82 02 01 A6
+    assert apdu == "80E2910007BF6404820201A6"
 
 
 def test_apdu_builder_list_notification():
-    """测试 ListNotification APDU"""
+    """测试 RetrieveNotificationsList APDU (BF2B)"""
     apdu = ApduBuilder.list_notification()
-    # 80 E2 91 00 03 BF2800 00
-    assert apdu.startswith("80E29100")
-    assert "BF28" in apdu
+    # 80 E2 91 00 09 BF2B 06 A0 04 81 02 04 F0
+    assert apdu == "80E2910009BF2B06A004810204F0"
 
 
 def test_apdu_builder_remove_notification():
-    """测试 RemoveNotification APDU"""
+    """测试 RemoveNotification APDU (BF30)"""
     apdu = ApduBuilder.remove_notification("0001")
-    # 80 E2 91 00 07 BF300480020001 00
-    assert apdu.startswith("80E29100")
-    assert "BF30" in apdu
-    assert "0001" in apdu
+    # 80 E2 91 00 07 BF30 04 80 02 0001
+    assert apdu == "80E2910007BF300480020001"
 
 
 def test_apdu_builder_fetch():

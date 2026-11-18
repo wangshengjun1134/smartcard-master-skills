@@ -472,13 +472,17 @@ class ApduBuilder:
     
     @staticmethod
     def euicc_memory_reset(channel: int = 0) -> str:
-        """EuiccMemoryReset (BF34)
+        """EuiccMemoryReset (BF64, SGP.32 §5.9.5)
 
-        重置 eUICC 内存，清除之前的下载状态
+        resetOptions [2] BIT STRING = 0xA6：
+          bit0 deleteOperationalProfiles (0x80)
+          bit2 resetDefaultSmdpAddress  (0x20)
+          bit5 resetEimConfigData       (0x04)
+          bit6 resetImmediateEnableConfig (0x02)
+        BIT STRING 内容为 (unusedBits=1, 0xA6)。
 
-        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 34 04 82 02 05 E0]
-        注意：无 Le 字段
-        
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF64 04 82 02 01 A6]
+
         Args:
             channel: 逻辑通道号 (0-3)
         """
@@ -487,7 +491,7 @@ class ApduBuilder:
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
-        data = "BF3404820205E0"
+        data = "BF6404820201A6"
         lc = len(data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
@@ -511,13 +515,12 @@ class ApduBuilder:
     
     @staticmethod
     def list_notification(channel: int = 0) -> str:
-        """ListNotification (BF28)
+        """RetrieveNotificationsList (BF2B)
 
-        列出待处理的通知
+        searchCriteria: profileManagementOperation = notificationInstall(04 F0)
 
-        ES10 命令格式: (80+channel) E2 91 00 Lc [BF 28 00]
-        注意：无 Le 字段
-        
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF2B 06 A0 04 81 02 04 F0]
+
         Args:
             channel: 逻辑通道号 (0-3)
         """
@@ -526,15 +529,15 @@ class ApduBuilder:
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
-        data = "BF2800"
+        data = "BF2B06A004810204F0"
         lc = len(data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
-    
+
     @staticmethod
     def remove_notification(sequence: str, channel: int = 0) -> str:
         """RemoveNotification (BF30)
 
-        删除指定序号的通知
+        删除指定序号的通知：BF30 { 80 <len> <seqNumber> }
 
         Args:
             sequence: 通知序号（十六进制字符串）
@@ -545,10 +548,10 @@ class ApduBuilder:
         ins = 0xE2
         p1 = 0x91
         p2 = 0x00
-        data = f"BF30048002{sequence}"
+        seq_len = len(sequence) // 2
+        data = f"BF30{2 + seq_len:02X}80{seq_len:02X}{sequence}"
         lc = len(data) // 2
-        le = 0x00
-        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}{le:02X}"
+        return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
     def add_initial_eim(eim_data: str) -> str:

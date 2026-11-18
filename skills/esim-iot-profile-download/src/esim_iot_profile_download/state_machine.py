@@ -48,6 +48,7 @@ class EsimState(str, Enum):
     # APDU 响应处理状态
     WAIT_GET_RESPONSE = "WAIT_GET_RESPONSE"  # 处理 61XX 响应
     WAIT_FETCH = "WAIT_FETCH"  # 处理 91XX 响应
+    WAIT_TERMINAL_RESPONSE = "WAIT_TERMINAL_RESPONSE"  # TERMINAL PROFILE 后的 proactive 应答
 
     # 终态
     SUCCESS = "SUCCESS"

@@ -630,15 +630,53 @@ class BPPGenerator:
     ) -> bytes:
         """简化模式的 BPP 生成
         
-        跳过加密步骤，直接发送原始 UPP 数据。
+        跳过加密步骤，但仍然构造完整的 BPP 结构。
         用于测试或当 euicc_otpk 不可用时。
         
         注意：这种模式生成的 BPP 可能被某些卡片拒绝，
         因为缺少有效的签名和 MAC。
         """
-        # 直接返回原始的 UPP 数据，不添加 BPP 头部
-        # 因为某些卡片期望直接接收 UPP 数据
-        return profile_package
+        # 构造 StoreMetadata (88) - 不加密，但需要添加 MAC
+        metadata = self._encode_store_metadata(
+            iccid, "Test Operator", profile_name, profile_class
+        )
+        # 添加 8 字节的 MAC (全零)
+        mac = bytes(8)
+        sequence_88_content = metadata + mac
+        sequence_88 = bytes([0x88]) + self._encode_ber_len(len(sequence_88_content)) + sequence_88_content
+        
+        # 构造 sequenceOf86 (Profile 数据) - 不加密，但需要添加 MAC
+        # 按照 SCP03t 格式，每个数据块最大 1007 字节明文 + 8 字节 MAC
+        MAX_PPP_PLAINTEXT_SEGMENT = 1007
+        sequence_86_parts = []
+        for offset in range(0, len(profile_package), MAX_PPP_PLAINTEXT_SEGMENT):
+            segment = profile_package[offset:offset + MAX_PPP_PLAINTEXT_SEGMENT]
+            # 添加 8 字节的 MAC (全零)
+            part_content = segment + mac
+            part = bytes([0x86]) + self._encode_ber_len(len(part_content)) + part_content
+            sequence_86_parts.append(part)
+        
+        # 构造 BF23 (initialiseSecureChannelRequest) - 简化版本
+        bf23 = self._encode_bf23_simplified(transaction_id)
+        
+        # 构造 A0 (firstSequenceOf87) - ConfigureISDP with MAC
+        configure_isdp = b'\x80\x01\x01'  # 简化的配置数据
+        configure_isdp_with_mac = configure_isdp + mac
+        first_87 = bytes([0x87]) + self._encode_ber_len(len(configure_isdp_with_mac)) + configure_isdp_with_mac
+        a0 = _der_tlv(b'\xa0', first_87)
+        
+        # 构造 A1 (sequenceOf88)
+        a1 = _der_tlv(b'\xa1', sequence_88)
+        
+        # 构造 A3 (sequenceOf86) - 包含多个 86 TLV
+        a3_content = b''.join(sequence_86_parts)
+        a3 = _der_tlv(b'\xa3', a3_content)
+        
+        # BPP 内容
+        bpp_content = bf23 + a0 + a1 + a3
+        
+        # BF36: BoundProfilePackage
+        return _der_tlv(b'\xbf\x36', bpp_content)
     
     def _encode_bf23_simplified(self, transaction_id: str) -> bytes:
         """编码 BF23 (initialiseSecureChannelRequest) - 简化版本

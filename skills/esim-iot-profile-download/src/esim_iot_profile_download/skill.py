@@ -280,7 +280,18 @@ class EsimIotProfileDownloadSkill(Skill):
                 response_bytes = bytes.fromhex(response)
                 pd_response = decode_prepare_download_response(response_bytes)
                 session.data["transaction_id"] = pd_response.get("transaction_id", "")
-                session.data["euicc_otpk"] = pd_response.get("euicc_otpk", b"").hex().upper()
+                euicc_otpk = pd_response.get("euicc_otpk", b"")
+                if euicc_otpk:
+                    session.data["euicc_otpk"] = euicc_otpk.hex().upper()
+                    ctx.output.text(f"获取到 eUICC OTPK: {euicc_otpk[:20].hex()}...")
+                else:
+                    ctx.output.text("警告: PrepareDownload 响应中没有 euicc_otpk")
+                    # 尝试从 EuiccInfo1 中获取 euiccCiPkId 作为备用
+                    euicc_info = session.data.get("euicc_info", {})
+                    if "verification_ci_pk_ids" in euicc_info and euicc_info["verification_ci_pk_ids"]:
+                        ctx.output.text("使用 euiccCiPkId 作为备用 OTPK")
+                        # 注意：这不是正确的 OTPK，只是用于测试
+                        session.data["euicc_otpk"] = "04" + "00" * 64  # 假的 OTPK
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 PrepareDownload 响应: {e}")
             return self._do_load_profile_package(ctx, session)

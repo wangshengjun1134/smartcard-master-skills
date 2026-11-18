@@ -234,10 +234,7 @@ class ApduBuilder:
     def load_profile_package(package_data: str, channel: int = 0) -> list:
         """LoadProfilePackage (BF36)
 
-        加载 Profile 包 - 支持 UPP 和 BPP 两种格式
-        
-        UPP (Unbound Profile Package): 以 A0 开头，需要包装成 BPP
-        BPP (Bound Profile Package): 以 BF36 开头，直接发送
+        加载 Profile 包 - 按照 BPP 的 ASN.1 结构分块
         
         根据 SGP.22 规范，BPP 需要按照 ASN.1 结构分割成多个 STORE DATA 对象：
         - BF23 (initialiseSecureChannelRequest) - 第 1 个对象
@@ -251,7 +248,7 @@ class ApduBuilder:
         每个对象的块编号从 0 开始。
 
         Args:
-            package_data: Profile 包数据（UPP 或 BPP 格式）
+            package_data: Profile 包数据（BPP 格式，以 BF36 开头）
             channel: 逻辑通道号 (0-3)
 
         Returns:
@@ -261,18 +258,8 @@ class ApduBuilder:
         cla = 0x80 + (channel & 0x03)
         ins = 0xE2  # ES10 命令
 
-        # 检查数据格式
-        if package_data.startswith("BF36"):
-            # BPP 格式，按照 BPP 结构分块
-            store_data_objects = ApduBuilder._parse_bpp_structure(package_data)
-        else:
-            # UPP 格式或简化模式，直接按 255 字节分块
-            # 每个块作为独立的 STORE DATA 对象
-            store_data_objects = []
-            max_block_size = 255
-            for i in range(0, len(package_data), max_block_size * 2):
-                block = package_data[i:i + max_block_size * 2]
-                store_data_objects.append(block)
+        # 按照 BPP 结构分块
+        store_data_objects = ApduBuilder._parse_bpp_structure(package_data)
         
         # 为每个 STORE DATA 对象生成 APDU 列表
         apdus = []

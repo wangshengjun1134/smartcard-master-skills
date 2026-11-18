@@ -554,42 +554,44 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{data}"
     
     @staticmethod
-    def add_initial_eim(eim_data: str) -> str:
+    def add_initial_eim(eim_data: str, channel: int = 0) -> str:
         """AddInitialEim (BF57)
-        
-        添加初始 eIM（间接模式）
-        
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF57 ...]
+
         Args:
-            eim_data: eIM 数据（ASN.1 编码）
+            eim_data: 完整的 BF57 TLV（十六进制）
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
-        ins = 0xBF
-        p1 = 0x57
+        cla = 0x80 + (channel & 0x03)
+        ins = 0xE2
+        p1 = 0x91
         p2 = 0x00
-        
+
         if len(eim_data) > 510:
-            return ApduBuilder._build_chained_apdu(cla, ins, p1, p2, eim_data)
-        
+            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, eim_data)
+
         lc = len(eim_data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{eim_data}"
-    
+
     @staticmethod
-    def enable_psmo(enable_data: str) -> str:
-        """EnablePSMO (BF51)
-        
-        启用 PSMO（Profile Storage Management Object）
-        
+    def enable_psmo(enable_data: str, channel: int = 0) -> str:
+        """LoadEuiccPackage (BF51)
+
+        ES10 命令格式: (80+channel) E2 91 00 Lc [BF51 ...]
+
         Args:
-            enable_data: 启用数据（ASN.1 编码）
+            enable_data: 完整的 BF51 TLV（十六进制）
+            channel: 逻辑通道号 (0-3)
         """
-        cla = 0x80
-        ins = 0xBF
-        p1 = 0x51
+        cla = 0x80 + (channel & 0x03)
+        ins = 0xE2
+        p1 = 0x91
         p2 = 0x00
-        
+
         if len(enable_data) > 510:
-            return ApduBuilder._build_chained_apdu(cla, ins, p1, p2, enable_data)
-        
+            return ApduBuilder._build_chained_apdu_list(cla, ins, p1, p2, enable_data)
+
         lc = len(enable_data) // 2
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{enable_data}"
     

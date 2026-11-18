@@ -43,9 +43,12 @@ class MockCardResponses:
         "sw": "9000"
     }
     
-    # PrepareDownload 响应 (BF21) - 包含 transactionId 和 euiccOtpk
+    # PrepareDownload 响应 (BF21) - transactionId + 65 字节 euiccOtpk（P-256 生成元）
+    _GX = "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296"
+    _GY = "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5"
     PREPARE_DOWNLOAD = {
-        "response": "BF2130A0148010" + "0102030405060708090A0B0C0D0E0F10" + "5F4910" + "1112131415161718191A1B1C1D1E1F20",
+        "response": "BF215BA05930558010" + "0102030405060708090A0B0C0D0E0F10"
+                    + "5F4941" + "04" + _GX + _GY,
         "sw": "9000"
     }
     
@@ -70,6 +73,37 @@ def send_request(proc, request):
         stderr = proc.stderr.read()
         raise AssertionError(f"No response received. STDERR: {stderr}")
     return json.loads(response_line)
+
+
+def drain_chunked(proc, session_id, response, block_data=None):
+    """分块 APDU（BF38/BF21/BF36 等）逐块推进，直到不再是“续”动作
+
+    block_data: 每块回传的数据；非最后一块会被 Skill 忽略，最后一块才会被解析。
+    """
+    seq = 1000
+    data = block_data if block_data is not None else {"response": "", "sw": "9000"}
+    while True:
+        next_action = response["result"].get("nextAction") or {}
+        if "续" not in next_action.get("name", ""):
+            return response
+        seq += 1
+        action_id = next_action["actionId"]
+        response = send_request(proc, {
+            "jsonrpc": "2.0",
+            "id": f"req-drain-{seq}",
+            "method": "skill.handleActionResult",
+            "params": {
+                "sessionId": session_id,
+                "actionId": action_id,
+                "result": {
+                    "actionId": action_id,
+                    "type": "APDU_RESULT",
+                    "status": "OK",
+                    "data": data,
+                    "elapsedMs": 10
+                }
+            }
+        })
 
 
 def test_stdin_stdout_direct_mode():
@@ -318,33 +352,12 @@ def test_stdin_stdout_direct_mode():
             })
 
             assert list_response["result"]["status"] == "CONTINUE"
-            assert "eUICC" in list_response["result"]["nextAction"]["name"]
+            assert "挑战" in list_response["result"]["nextAction"]["name"]
 
-            # 12. handleActionResult (GET EUICC INFO) -> GET EUICC CHALLENGE
-            euicc_info_response = send_request(proc, {
-                "jsonrpc": "2.0",
-                "id": "req-12",
-                "method": "skill.handleActionResult",
-                "params": {
-                    "sessionId": session_id,
-                    "actionId": "esim.get-euicc-info",
-                    "result": {
-                        "actionId": "esim.get-euicc-info",
-                        "type": "APDU_RESULT",
-                        "status": "OK",
-                        "data": MockCardResponses.GET_EUICC_INFO,
-                        "elapsedMs": 50
-                    }
-                }
-            })
-            
-            assert euicc_info_response["result"]["status"] == "CONTINUE"
-            assert "挑战" in euicc_info_response["result"]["nextAction"]["name"]
-            
-            # 13. handleActionResult (GET EUICC CHALLENGE) -> AUTHENTICATE SERVER
+            # 12. handleActionResult (GET EUICC CHALLENGE) -> GET EUICC INFO
             challenge_response = send_request(proc, {
                 "jsonrpc": "2.0",
-                "id": "req-13",
+                "id": "req-12",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -358,9 +371,30 @@ def test_stdin_stdout_direct_mode():
                     }
                 }
             })
-            
+
             assert challenge_response["result"]["status"] == "CONTINUE"
-            assert "认证" in challenge_response["result"]["nextAction"]["name"]
+            assert "eUICC" in challenge_response["result"]["nextAction"]["name"]
+
+            # 13. handleActionResult (GET EUICC INFO) -> AUTHENTICATE SERVER
+            euicc_info_response = send_request(proc, {
+                "jsonrpc": "2.0",
+                "id": "req-13",
+                "method": "skill.handleActionResult",
+                "params": {
+                    "sessionId": session_id,
+                    "actionId": "esim.get-euicc-info",
+                    "result": {
+                        "actionId": "esim.get-euicc-info",
+                        "type": "APDU_RESULT",
+                        "status": "OK",
+                        "data": MockCardResponses.GET_EUICC_INFO,
+                        "elapsedMs": 50
+                    }
+                }
+            })
+
+            assert euicc_info_response["result"]["status"] == "CONTINUE"
+            assert "认证" in euicc_info_response["result"]["nextAction"]["name"]
             
             # 14. handleActionResult (AUTHENTICATE SERVER) -> PREPARE DOWNLOAD
             auth_response = send_request(proc, {
@@ -380,6 +414,10 @@ def test_stdin_stdout_direct_mode():
                 }
             })
             
+            assert auth_response["result"]["status"] == "CONTINUE"
+
+            # BF38 分块下发，逐块推进直到进入 PrepareDownload
+            auth_response = drain_chunked(proc, session_id, auth_response)
             assert auth_response["result"]["status"] == "CONTINUE"
             assert "下载" in auth_response["result"]["nextAction"]["name"]
             
@@ -401,6 +439,10 @@ def test_stdin_stdout_direct_mode():
                 }
             })
             
+            # BF21 分块下发，逐块推进直到进入 LoadProfilePackage
+            pd_response = drain_chunked(
+                proc, session_id, pd_response, MockCardResponses.PREPARE_DOWNLOAD
+            )
             assert pd_response["result"]["status"] == "CONTINUE"
             assert "Profile" in pd_response["result"]["nextAction"]["name"]
             
@@ -422,6 +464,8 @@ def test_stdin_stdout_direct_mode():
                 }
             })
             
+            # BF36 分块下发，逐块推进直到进入后安装冷复位
+            lpp_response = drain_chunked(proc, session_id, lpp_response)
             assert lpp_response["result"]["status"] == "CONTINUE"
             assert lpp_response["result"]["nextAction"]["type"] == "RESET_CARD"
             
@@ -444,9 +488,9 @@ def test_stdin_stdout_direct_mode():
             })
             
             assert post_reset_response["result"]["status"] == "CONTINUE"
-            assert "通道 1" in post_reset_response["result"]["nextAction"]["name"]
-            
-            # 18. handleActionResult (IC1) -> IC2
+            assert "通道" in post_reset_response["result"]["nextAction"]["name"]
+
+            # 18. handleActionResult (IC1 打开通道) -> SELECT ISD-R
             ic1_response = send_request(proc, {
                 "jsonrpc": "2.0",
                 "id": "req-18",
@@ -463,20 +507,20 @@ def test_stdin_stdout_direct_mode():
                     }
                 }
             })
-            
+
             assert ic1_response["result"]["status"] == "CONTINUE"
-            assert "通道 2" in ic1_response["result"]["nextAction"]["name"]
-            
-            # 19. handleActionResult (IC2) -> SELECT ISD-R
+            assert "ISD-R" in ic1_response["result"]["nextAction"]["name"]
+
+            # 19. handleActionResult (SELECT ISD-R) -> GET PROFILES INFO
             ic2_response = send_request(proc, {
                 "jsonrpc": "2.0",
                 "id": "req-19",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
-                    "actionId": "esim.post-install-ic2",
+                    "actionId": "esim.post-install-select-isdr",
                     "result": {
-                        "actionId": "esim.post-install-ic2",
+                        "actionId": "esim.post-install-select-isdr",
                         "type": "APDU_RESULT",
                         "status": "OK",
                         "data": {"response": "02", "sw": "9000"},
@@ -486,32 +530,12 @@ def test_stdin_stdout_direct_mode():
             })
             
             assert ic2_response["result"]["status"] == "CONTINUE"
-            
-            # 20. handleActionResult (SELECT ISD-R) -> GET PROFILES INFO
+            assert "Profile" in ic2_response["result"]["nextAction"]["name"]
+
+            # 20. handleActionResult (GET PROFILES INFO) -> SUCCESS (直接模式)
             isdr2_response = send_request(proc, {
                 "jsonrpc": "2.0",
                 "id": "req-20",
-                "method": "skill.handleActionResult",
-                "params": {
-                    "sessionId": session_id,
-                    "actionId": "esim.post-install-select-isdr",
-                    "result": {
-                        "actionId": "esim.post-install-select-isdr",
-                        "type": "APDU_RESULT",
-                        "status": "OK",
-                        "data": MockCardResponses.SELECT_ISDR,
-                        "elapsedMs": 10
-                    }
-                }
-            })
-            
-            assert isdr2_response["result"]["status"] == "CONTINUE"
-            assert "Profile" in isdr2_response["result"]["nextAction"]["name"]
-            
-            # 21. handleActionResult (GET PROFILES INFO) -> SUCCESS (直接模式)
-            profiles_response = send_request(proc, {
-                "jsonrpc": "2.0",
-                "id": "req-21",
                 "method": "skill.handleActionResult",
                 "params": {
                     "sessionId": session_id,
@@ -525,12 +549,11 @@ def test_stdin_stdout_direct_mode():
                     }
                 }
             })
-            
-            # 最终结果应该是 SUCCESS
-            assert profiles_response["result"]["status"] == "SUCCESS"
-            assert profiles_response["result"]["data"]["profile_state"] == "ENABLED"
-            assert profiles_response["result"]["data"]["verified"] == True
-            assert profiles_response["result"]["data"]["iccid"] == "8929901012345678905"
+
+            assert isdr2_response["result"]["status"] == "SUCCESS"
+            assert isdr2_response["result"]["data"]["profile_state"] == "ENABLED"
+            assert isdr2_response["result"]["data"]["verified"] is True
+            assert isdr2_response["result"]["data"]["iccid"] == "8929901012345678905"
             
         finally:
             proc.terminate()

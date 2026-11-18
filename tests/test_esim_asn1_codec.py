@@ -8,7 +8,9 @@ from esim_iot_profile_download.asn1_codec import (
     decode_euicc_info1,
     decode_bf2e_challenge,
     encode_bf57_add_initial_eim,
-    encode_bf51_enable_psmo,
+    encode_enable_psmo,
+    encode_psmo_list,
+    encode_euicc_package_signed,
     decode_profiles_info,
     decode_profile_installation_result,
     Asn1CodecError
@@ -80,33 +82,41 @@ def test_decode_bf2e_challenge_too_short():
 
 
 def test_encode_bf57_add_initial_eim():
-    """测试 BF57 AddInitialEim 编码"""
-    eim_id = "test-eim-001"
-    eim_counter = 1
-    
-    result = encode_bf57_add_initial_eim(
-        eim_id=eim_id,
-        eim_counter=eim_counter
+    """测试 BF57 AddInitialEim 编码（对齐参考日志字节）"""
+    spki = bytes.fromhex(
+        "301306072A8648CE3D020106082A8648CE3D030107"
+        "034200" + "04" + "11" * 64
     )
-    
-    assert isinstance(result, bytes)
-    assert result[:2] == b'\xbf\x57'  # BF57 tag
+
+    result = encode_bf57_add_initial_eim(
+        eim_id="testeim1",
+        counter_value=1,
+        eim_public_key_spki=spki,
+        eim_fqdn="eimfqdn.example.com",
+        eim_id_type=3
+    )
+
+    assert result[:2] == b'\xbf\x57'
+    # 参考日志: BF57 8188 A0 8185 30 8182 80 08 "testeim1" 81 13 "eimfqdn.example.com" 82 01 03 83 01 01 A5 5B A0 59
+    assert result.hex().upper().startswith(
+        "BF578188A0818530818280087465737465696D31"
+        "811365696D6671646E2E6578616D706C652E636F6D"
+        "820103830101A55BA059"
+    )
 
 
 def test_encode_bf51_enable_psmo():
-    """测试 BF51 EnablePSMO 编码"""
-    iccid = "986810325476981032F4"  # BCD 编码的 ICCID
-    profile_id = "A0000005591010FFFFFFFF8900001000"
-    eim_counter = 2
-    
-    result = encode_bf51_enable_psmo(
-        iccid=iccid,
-        profile_id=profile_id,
-        eim_counter=eim_counter
+    """测试 LoadEuiccPackage(BF51) 编码（对齐参考日志字节）"""
+    eid = bytes.fromhex("89049032123451234512345678901235")
+    iccid_bcd = bytes.fromhex("989209012143658709F5")
+
+    psmo_list = encode_psmo_list(encode_enable_psmo(iccid_bcd))
+    signed = encode_euicc_package_signed("testeim1", eid, 2, psmo_list)
+
+    assert signed.hex().upper() == (
+        "302F80087465737465696D315A1089049032123451234512345678901235"
+        "810102A00EA30C5A0A989209012143658709F5"
     )
-    
-    assert isinstance(result, bytes)
-    assert result[:2] == b'\xbf\x51'  # BF51 tag
 
 
 def test_decode_profiles_info_enabled():

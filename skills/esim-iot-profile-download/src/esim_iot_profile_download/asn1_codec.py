@@ -809,54 +809,267 @@ def decode_bf2e_challenge(response: bytes) -> bytes:
     raise Asn1CodecError("BF2E response has no 16-byte challenge")
 
 
-# ========== BF57 AddInitialEim ==========
+# ========== BF57 AddInitialEim / BF51 EuiccPackage ==========
+
+def _strip_outer_sequence(der: bytes) -> bytes:
+    """去掉 DER SEQUENCE 的外层 tag+长度，返回内容"""
+    if len(der) < 2 or der[0] != 0x30:
+        return der
+    pos = 1
+    lb = der[pos]
+    pos += 1
+    if lb & 0x80:
+        n = lb & 0x7F
+        length = int.from_bytes(der[pos:pos + n], 'big')
+        pos += n
+    else:
+        length = lb
+    if pos + length != len(der):
+        return der
+    return der[pos:pos + length]
+
+
+def extract_spki(cert_or_spki_der: bytes) -> bytes:
+    """从 X.509 证书 DER 提取 SubjectPublicKeyInfo DER；传入已是 SPKI 时原样返回"""
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+
+        cert = x509.load_der_x509_certificate(cert_or_spki_der, default_backend())
+        return cert.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    except Exception:
+        return cert_or_spki_der
+
+
+def encode_eim_configuration_data(
+    eim_id: str,
+    counter_value: int,
+    eim_public_key_spki: bytes,
+    eim_fqdn: str = "",
+    eim_id_type: int = -1,
+    euicc_ci_pk_id: bytes = b""
+) -> bytes:
+    """编码 EimConfigurationData
+
+    EimConfigurationData ::= SEQUENCE {
+        eimId            [0] UTF8String,
+        eimFqdn          [1] UTF8String OPTIONAL,
+        eimIdType        [2] INTEGER OPTIONAL,
+        counterValue     [3] INTEGER,
+        eimPublicKeyData [5] CHOICE { eimPublicKey [0] SubjectPublicKeyInfo },
+        euiccCiPKId      [8] SubjectKeyIdentifier OPTIONAL
+    }
+    """
+    content = _der_tlv(b'\x80', eim_id.encode('utf-8'))
+    if eim_fqdn:
+        content += _der_tlv(b'\x81', eim_fqdn.encode('utf-8'))
+    if eim_id_type >= 0:
+        content += _der_tlv(b'\x82', _der_int(eim_id_type))
+    content += _der_tlv(b'\x83', _der_int(counter_value))
+    if eim_public_key_spki:
+        content += _der_tlv(b'\xa5', _der_tlv(b'\xa0', _strip_outer_sequence(eim_public_key_spki)))
+    if euicc_ci_pk_id:
+        content += _der_tlv(b'\x88', euicc_ci_pk_id)
+    return _der_tlv(b'\x30', content)
+
 
 def encode_bf57_add_initial_eim(
     eim_id: str,
-    eim_counter: int = 1,
-    eim_certificate: bytes = b""
+    counter_value: int,
+    eim_public_key_spki: bytes,
+    eim_fqdn: str = "",
+    eim_id_type: int = -1,
+    euicc_ci_pk_id: bytes = b""
 ) -> bytes:
+    """编码 AddInitialEimRequest (BF57)
+
+    BF57 { [0] SEQUENCE OF EimConfigurationData }
     """
-    编码 AddInitialEim (BF57)
+    ecd = encode_eim_configuration_data(
+        eim_id, counter_value, eim_public_key_spki,
+        eim_fqdn=eim_fqdn, eim_id_type=eim_id_type, euicc_ci_pk_id=euicc_ci_pk_id
+    )
+    return _der_tlv(b'\xbf\x57', _der_tlv(b'\xa0', ecd))
+
+
+_ADD_INITIAL_EIM_ERROR_NAMES = {
+    1: "insufficientMemory",
+    2: "associatedEimAlreadyExists",
+    3: "ciPKUnknown",
+    5: "invalidAssociationToken",
+    6: "counterValueOutOfRange",
+    7: "commandError",
+    127: "undefinedError",
+}
+
+
+def decode_add_initial_eim_response(response: bytes) -> Dict[str, Any]:
+    """解析 AddInitialEimResponse (BF57)
+
+    AddInitialEimResponse ::= [87] CHOICE {
+        addInitialEimOk    [0] SEQUENCE OF ...   -- A0
+        addInitialEimError [1] INTEGER           -- 81
+    }
+
+    Returns:
+        {"ok", "error_code", "error_name", "association_token"}
     """
-    # eimId: UTF8String
-    eim_id_field = _der_tlv(b'\x80', eim_id.encode('utf-8'))
-    
-    # counter: INTEGER
-    counter_field = _der_tlv(b'\x02', eim_counter.to_bytes(1, 'big'))
-    
-    # certificate: [1]
-    cert_field = b''
-    if eim_certificate:
-        cert_field = _der_tlv(b'\xa1', eim_certificate)
-    
-    content = eim_id_field + counter_field + cert_field
-    return _der_tlv(b'\xbf\x57', content)
+    result = {"ok": False, "error_code": None, "error_name": "", "association_token": None}
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF57:
+        result["error_name"] = "not BF57"
+        return result
+
+    member_tag, member_body, _ = _read_tlv(body, 0)
+    if member_tag == 0x81:
+        code = int.from_bytes(member_body, 'big') if member_body else None
+        result["error_code"] = code
+        result["error_name"] = _ADD_INITIAL_EIM_ERROR_NAMES.get(code, f"unknown({code})")
+        return result
+    if member_tag != 0xA0:
+        result["error_name"] = f"unknown member tag 0x{member_tag:02X}"
+        return result
+
+    result["ok"] = True
+    for field_tag, value, _ in _iter_tlvs(member_body):
+        if field_tag == 0x84 and value:
+            result["association_token"] = int.from_bytes(value, 'big')
+    return result
 
 
-# ========== BF51 EnablePSMO ==========
+def decode_memory_reset_result(response: bytes):
+    """解析 EuiccMemoryResetResponse (BF64)，返回 resetResult（0=ok, 1=nothingToDelete）"""
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF64:
+        return None
+    for field_tag, value, _ in _iter_tlvs(body):
+        if field_tag == 0x80 and value:
+            return int.from_bytes(value, 'big')
+    return None
 
-def encode_bf51_enable_psmo(
-    iccid: str,
-    profile_id: str,
-    eim_counter: int = 2
+
+def encode_enable_psmo(iccid_bcd: bytes, rollback_flag: bool = False) -> bytes:
+    """编码 enable PSMO: [3] SEQUENCE { 5A iccid, [0] rollbackFlag OPTIONAL }"""
+    content = _der_tlv(b'\x5a', iccid_bcd)
+    if rollback_flag:
+        content += b'\x80\x00'
+    return _der_tlv(b'\xa3', content)
+
+
+def encode_psmo_list(*psmo: bytes) -> bytes:
+    """编码 psmoList: [0] SEQUENCE OF Psmo"""
+    return _der_tlv(b'\xa0', b''.join(psmo))
+
+
+def encode_euicc_package_signed(
+    eim_id: str,
+    eid: bytes,
+    counter_value: int,
+    euicc_package: bytes
 ) -> bytes:
+    """编码 EuiccPackageSigned
+
+    SEQUENCE { 80 eimId, 5A eidValue, 81 counterValue, <euiccPackage> }
     """
-    编码 EnablePSMO (BF51)
+    content = (
+        _der_tlv(b'\x80', eim_id.encode('utf-8'))
+        + _der_tlv(b'\x5a', eid)
+        + _der_tlv(b'\x81', _der_int(counter_value))
+        + euicc_package
+    )
+    return _der_tlv(b'\x30', content)
+
+
+def encode_bf51_euicc_package_request(signed: bytes, eim_signature: bytes) -> bytes:
+    """编码 EuiccPackageRequest (BF51): BF51 { euiccPackageSigned, 5F37 eimSignature }"""
+    return _der_tlv(b'\xbf\x51', signed + _der_tlv(b'\x5f\x37', eim_signature))
+
+
+def sign_euicc_package(signed: bytes, eim_private_key) -> bytes:
+    """eIM 签名：对 euiccPackageSigned || 84 01 00 签名，返回裸 r||s"""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+    to_sign = signed + b'\x84\x01\x00'
+    der = eim_private_key.sign(to_sign, ec.ECDSA(hashes.SHA256()))
+    r, s = utils.decode_dss_signature(der)
+    return r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
+
+
+def decode_euicc_package_result(response: bytes) -> Dict[str, Any]:
+    """解析 EuiccPackageResult (BF51 响应)
+
+    成功: BF51 { A0 { 30 { 80 eimId, 81 counter, 83 eimTransactionId,
+                           30 { 83 01 <enableResult> } } }, 5F37 }
+    失败: BF51 { A1 { 30 { ... 02 <euiccPackageErrorCode> } , 5F37 } }
+
+    Returns:
+        {"ok", "eim_id", "enable_result", "error_code", "error_name"}
     """
-    # iccid: OCTET STRING (BCD 编码)
-    iccid_bytes = bytes.fromhex(iccid) if len(iccid) % 2 == 0 else bytes.fromhex(iccid + 'F')
-    iccid_field = _der_tlv(b'\x04', iccid_bytes)
-    
-    # profileId: OCTET STRING
-    profile_bytes = bytes.fromhex(profile_id.replace(" ", ""))
-    profile_field = _der_tlv(b'\x04', profile_bytes)
-    
-    # counter: INTEGER
-    counter_field = _der_tlv(b'\x02', eim_counter.to_bytes(1, 'big'))
-    
-    content = iccid_field + profile_field + counter_field
-    return _der_tlv(b'\xbf\x51', content)
+    result = {"ok": False, "eim_id": "", "enable_result": None,
+              "error_code": None, "error_name": ""}
+    tag, body, _ = _read_tlv(response, 0)
+    if tag != 0xBF51:
+        return result
+
+    member_tag, member_body, _ = _read_tlv(body, 0)
+    if member_tag == 0xA1:
+        # 错误分支：EuiccPackageErrorDataSigned 内含裸 INTEGER euiccPackageErrorCode
+        code = None
+        seq_tag, seq_body, _ = _read_tlv(member_body, 0)
+        if seq_tag == 0x30:
+            for field_tag, value, _ in _iter_tlvs(seq_body):
+                if field_tag == 0x02 and value:
+                    code = int.from_bytes(value, 'big')
+        result["error_code"] = code
+        result["error_name"] = _EUICC_PACKAGE_ERROR_NAMES.get(code, f"unknown({code})")
+        return result
+
+    if member_tag != 0xA0:
+        result["error_name"] = f"unknown result tag 0x{member_tag:02X}"
+        return result
+
+    seq_tag, seq_body, _ = _read_tlv(member_body, 0)
+    if seq_tag != 0x30:
+        result["error_name"] = "no EuiccPackageResultData"
+        return result
+
+    for field_tag, value, _ in _iter_tlvs(seq_body):
+        if field_tag == 0x80:
+            try:
+                result["eim_id"] = value.decode('utf-8')
+            except Exception:
+                result["eim_id"] = value.hex().upper()
+        elif field_tag == 0x30:
+            for inner_tag, inner_value, _ in _iter_tlvs(value):
+                if inner_tag == 0x83 and inner_value:
+                    result["enable_result"] = int.from_bytes(inner_value, 'big')
+
+    result["ok"] = result["enable_result"] == 0
+    if not result["ok"] and result["enable_result"] is not None:
+        result["error_name"] = f"enableResult={result['enable_result']}"
+    return result
+
+
+_EUICC_PACKAGE_ERROR_NAMES = {
+    3: "invalidEid",
+    4: "replayError",
+    6: "counterValueOutOfRange",
+    15: "sizeOverflow",
+    104: "ecallActive",
+    127: "undefinedError",
+}
+
+
+def _der_int(value: int) -> bytes:
+    """DER INTEGER 内容（最少字节，正数）"""
+    if value == 0:
+        return b'\x00'
+    length = (value.bit_length() + 8) // 8
+    return value.to_bytes(length, 'big')
 
 
 # ========== GetProfilesInfo 解码 ==========

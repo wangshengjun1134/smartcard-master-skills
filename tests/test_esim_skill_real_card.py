@@ -492,6 +492,28 @@ class TestEsimSkillWithRealCard:
         # 流程应该能正常结束
         assert result["status"] in ["SUCCESS", "FAILED"]
 
+    def test_indirect_mode_install_and_enable(self):
+        """间接模式：AddInitialEim → 下载 → LoadEuiccPackage(enable)"""
+        result = run_skill_with_real_card(
+            skill_input={
+                "operation": "install_and_enable",
+                "mode": "indirect",
+                "eid": "89049032123451234512345678901235",
+                "smdp_address": "testsmdpplus1.example.com",
+                "matching_id": "ABC12345",
+                "iccid": "8929901012345678905F",
+                "profile_id": "A0000005591010FFFFFFFF8900001000",
+                "eim_id": "testeim1",
+                "eim_fqdn": "eimfqdn.example.com",
+                "eim_id_type": 3,
+                "tac": "00000000"
+            },
+            max_steps=120,
+            verbose=True
+        )
+
+        assert result["status"] in ["SUCCESS", "FAILED"]
+
 
 if __name__ == "__main__":
     # 直接运行时执行完整测试

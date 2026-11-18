@@ -25,7 +25,15 @@ from .asn1_codec import (
     decode_notification_sequences,
     decode_remove_notification_result,
     encode_bf57_add_initial_eim,
-    encode_bf51_enable_psmo,
+    extract_spki,
+    decode_add_initial_eim_response,
+    decode_memory_reset_result,
+    encode_enable_psmo,
+    encode_psmo_list,
+    encode_euicc_package_signed,
+    encode_bf51_euicc_package_request,
+    sign_euicc_package,
+    decode_euicc_package_result,
     decode_profiles_info,
     Asn1CodecError,
     generate_bpp
@@ -174,6 +182,12 @@ class EsimIotProfileDownloadSkill(Skill):
         # 处理 91XX 响应 (eUICC 异步响应)
         # Skill 需要发送 FETCH 命令获取数据
         if sw.startswith("91") and len(sw) == 4:
+            # EuiccMemoryReset 的 91XX 属正常结束（结果已随响应返回），无需 FETCH
+            if current_state == EsimState.WAIT_EUICC_MEMORY_RESET:
+                failure = self._check_memory_reset_result(ctx, session, response)
+                if failure:
+                    return failure
+                return self._do_list_notification(ctx, session)
             if current_state == EsimState.WAIT_FETCH:
                 # 链式 91XX：累积数据块，保留最初被打断的状态
                 session.data["pending_response"] = session.data.get("pending_response", "") + response
@@ -228,10 +242,9 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_euicc_memory_reset(ctx, session)
 
         elif current_state == EsimState.WAIT_EUICC_MEMORY_RESET:
-            # EuiccMemoryReset 完成后，处理可能的 91XX 响应
-            sw = result.data.get("sw", "")
-            if sw.startswith("91"):
-                return self._do_fetch(ctx, session, int(sw[2:], 16))
+            failure = self._check_memory_reset_result(ctx, session, result.data.get("response", ""))
+            if failure:
+                return failure
             return self._do_list_notification(ctx, session)
 
         elif current_state == EsimState.WAIT_FETCH_REFRESH:
@@ -294,6 +307,9 @@ class EsimIotProfileDownloadSkill(Skill):
                     ctx.output.text(f"提取 euiccCiPKId: {ver_ids[0].hex().upper()}")
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
+            # 间接模式下 eIM 必须先配置，之后才由 eIM 驱动下载
+            if session.data.get("mode") == "indirect" and not session.data.get("eim_added"):
+                return self._do_add_initial_eim(ctx, session, purpose="pre_install")
             return self._do_authenticate_server(ctx, session)
 
         elif current_state == EsimState.WAIT_AUTHENTICATE_SERVER:
@@ -382,6 +398,7 @@ class EsimIotProfileDownloadSkill(Skill):
             response = result.data.get("response", "")
             if len(response) >= 2:
                 session.data["post_install_channel"] = int(response[:2], 16)
+                session.data["channel"] = int(response[:2], 16)
             return self._do_post_install_ic2(ctx, session)
 
         elif current_state == EsimState.WAIT_POST_INSTALL_IC2:
@@ -398,18 +415,24 @@ class EsimIotProfileDownloadSkill(Skill):
             # 检查是否需要 eIM 启用
             mode = session.data.get("mode", "indirect")
             if mode == "indirect":
-                return self._do_add_initial_eim(ctx, session)
+                return self._do_enable_psmo(ctx, session)
             else:
                 # 直接模式，验证状态后完成
                 return self._verify_and_complete(ctx, session)
 
         elif current_state == EsimState.WAIT_ADD_INITIAL_EIM:
-            return self._do_enable_psmo(ctx, session)
+            return self._check_add_initial_eim_result(ctx, session, result.data.get("response", ""))
 
         elif current_state == EsimState.WAIT_ENABLE_PSMO:
-            return self._do_post_enable_reset(ctx, session)
+            return self._check_euicc_package_result(ctx, session, result.data.get("response", ""))
 
         elif current_state == EsimState.WAIT_POST_ENABLE_RESET:
+            return self._do_post_enable_ic(ctx, session)
+
+        elif current_state == EsimState.WAIT_POST_ENABLE_IC:
+            response = result.data.get("response", "")
+            if len(response) >= 2:
+                session.data["channel"] = int(response[:2], 16)
             return self._do_post_enable_select_isdr(ctx, session)
 
         elif current_state == EsimState.WAIT_POST_ENABLE_SELECT_ISDR:
@@ -655,6 +678,9 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_SELECT_ISDR:
             return self._do_euicc_memory_reset(ctx, session)
         elif previous_state == EsimState.WAIT_EUICC_MEMORY_RESET:
+            failure = self._check_memory_reset_result(ctx, session, response)
+            if failure:
+                return failure
             return self._do_list_notification(ctx, session)
         elif previous_state == EsimState.WAIT_FETCH_REFRESH:
             return self._do_list_notification(ctx, session)
@@ -705,6 +731,9 @@ class EsimIotProfileDownloadSkill(Skill):
                     ctx.output.text(f"提取 euiccCiPKId: {ver_ids[0].hex().upper()}")
             except Exception as e:
                 ctx.output.text(f"警告: 无法解析 EuiccInfo1: {e}")
+            # 间接模式下 eIM 必须先配置，之后才由 eIM 驱动下载
+            if session.data.get("mode") == "indirect" and not session.data.get("eim_added"):
+                return self._do_add_initial_eim(ctx, session, purpose="pre_install")
             return self._do_authenticate_server(ctx, session)
         elif previous_state == EsimState.WAIT_AUTHENTICATE_SERVER:
             try:
@@ -744,6 +773,7 @@ class EsimIotProfileDownloadSkill(Skill):
         elif previous_state == EsimState.WAIT_POST_INSTALL_IC1:
             if len(response) >= 2:
                 session.data["post_install_channel"] = int(response[:2], 16)
+                session.data["channel"] = int(response[:2], 16)
             return self._do_post_install_ic2(ctx, session)
         elif previous_state == EsimState.WAIT_POST_INSTALL_IC2:
             return self._do_post_install_select_isdr(ctx, session)
@@ -753,14 +783,18 @@ class EsimIotProfileDownloadSkill(Skill):
             session.data["profiles_info_response"] = response
             mode = session.data.get("mode", "indirect")
             if mode == "indirect":
-                return self._do_add_initial_eim(ctx, session)
+                return self._do_enable_psmo(ctx, session)
             else:
                 return self._verify_and_complete(ctx, session)
         elif previous_state == EsimState.WAIT_ADD_INITIAL_EIM:
-            return self._do_enable_psmo(ctx, session)
+            return self._check_add_initial_eim_result(ctx, session, response)
         elif previous_state == EsimState.WAIT_ENABLE_PSMO:
-            return self._do_post_enable_reset(ctx, session)
+            return self._check_euicc_package_result(ctx, session, response)
         elif previous_state == EsimState.WAIT_POST_ENABLE_RESET:
+            return self._do_post_enable_ic(ctx, session)
+        elif previous_state == EsimState.WAIT_POST_ENABLE_IC:
+            if len(response) >= 2:
+                session.data["channel"] = int(response[:2], 16)
             return self._do_post_enable_select_isdr(ctx, session)
         elif previous_state == EsimState.WAIT_POST_ENABLE_SELECT_ISDR:
             return self._do_verify_profile_state(ctx, session)
@@ -1111,6 +1145,29 @@ class EsimIotProfileDownloadSkill(Skill):
     
     # ========== 后安装处理 ==========
     
+    def _check_memory_reset_result(self, ctx: SkillContext, session: SkillSession, response_hex: str):
+        """校验 EuiccMemoryResetResponse；0(ok)/1(nothingToDelete) 视为成功"""
+        if not response_hex:
+            return None
+        try:
+            reset_result = decode_memory_reset_result(bytes.fromhex(response_hex))
+        except Exception as e:
+            ctx.output.text(f"警告: 无法解析 EuiccMemoryResetResponse: {e}")
+            return None
+
+        if reset_result in (0, 1):
+            ctx.output.text(f"EuiccMemoryReset 结果: {reset_result}")
+            return None
+        if reset_result is None:
+            return None
+
+        session.data["state"] = EsimState.FAILED
+        return SkillResult.failed(
+            session.session_id,
+            "EUICC_MEMORY_RESET_FAILED",
+            f"EuiccMemoryReset 失败: resetResult={reset_result} (0=ok, 1=nothingToDelete, 5=catBusy)"
+        )
+
     def _check_installation_result(self, ctx: SkillContext, session: SkillSession, response_hex: str):
         """检查 ProfileInstallationResult (BF37)
 
@@ -1188,25 +1245,38 @@ class EsimIotProfileDownloadSkill(Skill):
     
     # ========== eIM 启用阶段（间接模式）==========
     
-    def _do_add_initial_eim(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
-        """AddInitialEim"""
-        ctx.output.text("步骤 18: 添加初始 eIM")
+    def _do_add_initial_eim(self, ctx: SkillContext, session: SkillSession, purpose: str = "pre_enable") -> SkillResult:
+        """AddInitialEim (BF57)
+
+        Args:
+            purpose: "pre_install"（下载前，SGP.33 间接模式）或 "pre_enable"（启用前）
+        """
+        ctx.output.text("添加初始 eIM")
         session.data["state"] = EsimState.WAIT_ADD_INITIAL_EIM
-        
-        # 从会话数据中获取参数
+        session.data["add_eim_purpose"] = purpose
+
         params = session.data.get("params", {})
-        eim_id = params.get("eim_id", "default-eim")
-        eim_counter = params.get("eim_initial_counter", 1)
-        
-        # 获取 eIM 证书
+        eim_id = params.get("eim_id", "testeim1")
+        eim_fqdn = params.get("eim_fqdn", "eimfqdn.example.com")
+        eim_id_type = int(params.get("eim_id_type", 3))
+        eim_counter = int(params.get("eim_initial_counter", 1))
+
         eim_cert_hex = session.data.get("eim_cert", "")
-        eim_certificate = bytes.fromhex(eim_cert_hex) if eim_cert_hex else b""
-        
+        if not eim_cert_hex:
+            return SkillResult.failed(
+                session.session_id,
+                "EIM_CERT_MISSING",
+                "缺少 eIM 证书，无法编码 AddInitialEim"
+            )
+
         try:
+            spki = extract_spki(bytes.fromhex(eim_cert_hex))
             eim_data = encode_bf57_add_initial_eim(
                 eim_id=eim_id,
-                eim_counter=eim_counter,
-                eim_certificate=eim_certificate
+                counter_value=eim_counter,
+                eim_public_key_spki=spki,
+                eim_fqdn=eim_fqdn,
+                eim_id_type=eim_id_type
             )
             eim_data_hex = eim_data.hex().upper()
         except Asn1CodecError as e:
@@ -1215,42 +1285,113 @@ class EsimIotProfileDownloadSkill(Skill):
                 "ASN1_ENCODE_ERROR",
                 f"AddInitialEim 编码失败: {e}"
             )
-        
-        apdu = ApduBuilder.add_initial_eim(eim_data_hex)
+
+        channel = session.data.get("channel", 0)
+        apdu = ApduBuilder.add_initial_eim(eim_data_hex, channel=channel)
         action = self._build_apdu_action("esim.add-initial-eim", "添加初始 eIM", apdu)
         return SkillResult.continue_with(session.session_id, action)
-    
+
     def _do_enable_psmo(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
-        """EnablePSMO"""
-        ctx.output.text("步骤 19: 启用 PSMO")
+        """LoadEuiccPackage(BF51) — enable PSMO，eIM 签名"""
+        ctx.output.text("启用 Profile (LoadEuiccPackage)")
         session.data["state"] = EsimState.WAIT_ENABLE_PSMO
-        
-        # 从会话数据中获取参数
+
         params = session.data.get("params", {})
-        iccid = params.get("iccid", "")
-        profile_id = params.get("profile_id", "")
-        eim_counter = params.get("eim_enable_counter", 2)
-        
-        # ICCID 需要 BCD 编码（半字节交换）
-        iccid_bcd = self._encode_iccid_bcd(iccid)
-        
-        try:
-            enable_data = encode_bf51_enable_psmo(
-                iccid=iccid_bcd,
-                profile_id=profile_id,
-                eim_counter=eim_counter
+        eim_id = params.get("eim_id", "testeim1")
+        eim_counter = int(params.get("eim_enable_counter", 2))
+        eid = params.get("eid", "")
+        iccid_bcd = self._encode_iccid_bcd(params.get("iccid", ""))
+
+        eim_key_hex = session.data.get("eim_key", "")
+        if not eim_key_hex:
+            return SkillResult.failed(
+                session.session_id,
+                "EIM_KEY_MISSING",
+                "缺少 eIM 私钥，无法签名 EuiccPackage"
             )
-            enable_data_hex = enable_data.hex().upper()
+
+        try:
+            psmo = encode_enable_psmo(bytes.fromhex(iccid_bcd))
+            psmo_list = encode_psmo_list(psmo)
+            signed = encode_euicc_package_signed(
+                eim_id=eim_id,
+                eid=bytes.fromhex(eid),
+                counter_value=eim_counter,
+                euicc_package=psmo_list
+            )
+            eim_private_key = _load_ec_private_key(bytes.fromhex(eim_key_hex))
+            signature = sign_euicc_package(signed, eim_private_key)
+            request = encode_bf51_euicc_package_request(signed, signature)
+            request_hex = request.hex().upper()
         except Asn1CodecError as e:
             return SkillResult.failed(
                 session.session_id,
                 "ASN1_ENCODE_ERROR",
-                f"EnablePSMO 编码失败: {e}"
+                f"EuiccPackageRequest 编码失败: {e}"
             )
-        
-        apdu = ApduBuilder.enable_psmo(enable_data_hex)
-        action = self._build_apdu_action("esim.enable-psmo", "启用 PSMO", apdu)
+
+        channel = session.data.get("post_install_channel", 1)
+        apdu = ApduBuilder.enable_psmo(request_hex, channel=channel)
+        action = self._build_apdu_action("esim.enable-psmo", "启用 Profile", apdu)
         return SkillResult.continue_with(session.session_id, action)
+
+    def _check_add_initial_eim_result(self, ctx: SkillContext, session: SkillSession, response_hex: str) -> SkillResult:
+        """解析 AddInitialEimResponse，成功后按 purpose 继续流程"""
+        try:
+            eim_result = decode_add_initial_eim_response(bytes.fromhex(response_hex))
+        except Exception as e:
+            return SkillResult.failed(
+                session.session_id,
+                "ADD_INITIAL_EIM_FAILED",
+                f"无法解析 AddInitialEim 响应: {e}"
+            )
+
+        if not eim_result["ok"]:
+            # associatedEimAlreadyExists(2) 视为可接受：卡上已配置该 eIM，重跑时直接继续
+            if eim_result["error_code"] == 2:
+                ctx.output.text("eIM 已存在，跳过配置")
+            else:
+                return SkillResult.failed(
+                    session.session_id,
+                    "ADD_INITIAL_EIM_FAILED",
+                    f"AddInitialEim 失败: errorCode={eim_result['error_code']} "
+                    f"({eim_result['error_name']})"
+                )
+
+        session.data["eim_added"] = True
+        session.data["eim_association_token"] = eim_result["association_token"]
+        if eim_result["ok"]:
+            ctx.output.text(
+                f"AddInitialEim 成功, associationToken={eim_result['association_token']}"
+            )
+
+        purpose = session.data.get("add_eim_purpose", "pre_enable")
+        if purpose == "pre_install":
+            return self._do_authenticate_server(ctx, session)
+        return self._do_enable_psmo(ctx, session)
+
+    def _check_euicc_package_result(self, ctx: SkillContext, session: SkillSession, response_hex: str) -> SkillResult:
+        """解析 EuiccPackageResult，成功则进入启用后复位"""
+        try:
+            pkg_result = decode_euicc_package_result(bytes.fromhex(response_hex))
+        except Exception as e:
+            return SkillResult.failed(
+                session.session_id,
+                "EUICC_PACKAGE_FAILED",
+                f"无法解析 EuiccPackageResult: {e}"
+            )
+
+        if not pkg_result["ok"]:
+            return SkillResult.failed(
+                session.session_id,
+                "EUICC_PACKAGE_FAILED",
+                f"启用 Profile 失败: enableResult={pkg_result['enable_result']} "
+                f"errorCode={pkg_result['error_code']} ({pkg_result['error_name']})"
+            )
+
+        session.data["euicc_package_result"] = pkg_result
+        ctx.output.text("Profile 启用成功")
+        return self._do_post_enable_reset(ctx, session)
     
     def _encode_iccid_bcd(self, iccid: str) -> str:
         """将 ICCID 字符串转换为 BCD 编码（半字节交换）
@@ -1282,21 +1423,32 @@ class EsimIotProfileDownloadSkill(Skill):
         )
         return SkillResult.continue_with(session.session_id, action)
     
+    def _do_post_enable_ic(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """启用后冷复位完毕，重新打开逻辑通道（由卡分配通道号）"""
+        ctx.output.text("步骤 20.1: 重新打开逻辑通道")
+        session.data["state"] = EsimState.WAIT_POST_ENABLE_IC
+
+        apdu = ApduBuilder.manage_channel(mode=0x00, channel=0)
+        action = self._build_apdu_action("esim.post-enable-ic", "打开逻辑通道", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
     def _do_post_enable_select_isdr(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """启用后 SELECT ISD-R"""
         ctx.output.text("步骤 21: 重新选择 ISD-R")
         session.data["state"] = EsimState.WAIT_POST_ENABLE_SELECT_ISDR
-        
-        apdu = ApduBuilder.select_isdr()
+
+        channel = session.data.get("channel", 1)
+        apdu = ApduBuilder.select_isdr(channel=channel)
         action = self._build_apdu_action("esim.post-enable-select-isdr", "选择 ISD-R", apdu)
         return SkillResult.continue_with(session.session_id, action)
-    
+
     def _do_verify_profile_state(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """验证 Profile 状态"""
         ctx.output.text("步骤 22: 验证 Profile 状态")
         session.data["state"] = EsimState.WAIT_VERIFY_PROFILE_STATE
-        
-        apdu = ApduBuilder.get_profiles_info()
+
+        channel = session.data.get("channel", 1)
+        apdu = ApduBuilder.get_profiles_info(channel=channel)
         action = self._build_apdu_action("esim.verify-profile-state", "验证 Profile 状态", apdu)
         return SkillResult.continue_with(session.session_id, action)
     

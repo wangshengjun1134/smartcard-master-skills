@@ -60,9 +60,12 @@ class MockCardResponses:
     }
     
     # PrepareDownload 响应 (BF21)
-    # 包含 transactionId 和 euiccOtpk
+    # transactionId + 65 字节 euiccOtpk（P-256 生成元）
+    _GX = "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296"
+    _GY = "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5"
     PREPARE_DOWNLOAD_RESPONSE = {
-        "response": "BF2130A0148010" + "0102030405060708090A0B0C0D0E0F10" + "5F4910" + "1112131415161718191A1B1C1D1E1F20",
+        "response": "BF215BA05930558010" + "0102030405060708090A0B0C0D0E0F10"
+                    + "5F4941" + "04" + _GX + _GY,
         "sw": "9000"
     }
     
@@ -81,16 +84,35 @@ class MockCardResponses:
         "sw": "9000"
     }
     
-    # AddInitialEim 响应
-    ADD_INITIAL_EIM_RESPONSE = {"response": "", "sw": "9000"}
-    
-    # EnablePSMO 响应
-    ENABLE_PSMO_RESPONSE = {"response": "", "sw": "9000"}
+    # AddInitialEim 响应（addInitialEimOk = A0）
+    ADD_INITIAL_EIM_RESPONSE = {"response": "BF5704A0020500", "sw": "9000"}
+
+    # LoadEuiccPackage 响应（enableResult [3] = 0）
+    ENABLE_PSMO_RESPONSE = {
+        "response": "BF515DA05B301680087465737465696D318101028302020C30038301005F3740" + "00" * 64,
+        "sw": "9000"
+    }
+
+
+def drain_pending_apdus(skill, ctx, store, session, action_id: str = "esim.continue"):
+    """把分块 APDU 剩余的块用空 9000 响应逐块推进，直到状态发生变化"""
+    result = None
+    initial_state = session.data.get("state")
+    for _ in range(64):
+        if session.data.get("state") != initial_state:
+            break
+        result = skill.handle_action_result(ctx, ActionResult(
+            action_id=action_id,
+            type="APDU_RESULT",
+            status=ActionResultStatus.OK,
+            data={"response": "", "sw": "9000"}
+        ), session)
+        store.save(session, "esim.iot-profile-download")
+    return result
 
 
 @pytest.fixture
 def test_env():
-    """创建测试环境"""
     tmpdir = tempfile.mkdtemp()
     store = SessionStore(tmpdir)
     ctx = SkillContext(
@@ -237,21 +259,10 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, list_result, session)
     store.save(session, "esim.iot-profile-download")
-    # 无通知时直接跳到 GET EUICC INFO
-    assert session.data["state"] == EsimState.WAIT_GET_EUICC_INFO
-
-    # 13. GET EUICC INFO 完成 -> GET EUICC CHALLENGE
-    euicc_info_result = ActionResult(
-        action_id="esim.get-euicc-info",
-        type="APDU_RESULT",
-        status=ActionResultStatus.OK,
-        data=MockCardResponses.GET_EUICC_INFO_RESPONSE
-    )
-    result = skill.handle_action_result(ctx, euicc_info_result, session)
-    store.save(session, "esim.iot-profile-download")
+    # 无通知时直接进入安装阶段，顺序与参考实现一致：先 GetEuiccChallenge(BF2E)
     assert session.data["state"] == EsimState.WAIT_GET_EUICC_CHALLENGE
-    
-    # 12. GET EUICC CHALLENGE 完成 -> AUTHENTICATE SERVER
+
+    # 12. GET EUICC CHALLENGE 完成 -> GET EUICC INFO
     challenge_result = ActionResult(
         action_id="esim.get-euicc-challenge",
         type="APDU_RESULT",
@@ -260,10 +271,21 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, challenge_result, session)
     store.save(session, "esim.iot-profile-download")
-    assert session.data["state"] == EsimState.WAIT_AUTHENTICATE_SERVER
+    assert session.data["state"] == EsimState.WAIT_GET_EUICC_INFO
     assert "challenge" in session.data
+
+    # 13. GET EUICC INFO 完成 -> AUTHENTICATE SERVER
+    euicc_info_result = ActionResult(
+        action_id="esim.get-euicc-info",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data=MockCardResponses.GET_EUICC_INFO_RESPONSE
+    )
+    result = skill.handle_action_result(ctx, euicc_info_result, session)
+    store.save(session, "esim.iot-profile-download")
+    assert session.data["state"] == EsimState.WAIT_AUTHENTICATE_SERVER
     
-    # 13. AUTHENTICATE SERVER 完成 -> PREPARE DOWNLOAD
+    # 13. AUTHENTICATE SERVER 完成 -> PREPARE DOWNLOAD（BF38 分块，需逐块推进）
     auth_result = ActionResult(
         action_id="esim.authenticate-server",
         type="APDU_RESULT",
@@ -272,9 +294,10 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, auth_result, session)
     store.save(session, "esim.iot-profile-download")
+    drain_pending_apdus(skill, ctx, store, session)
     assert session.data["state"] == EsimState.WAIT_PREPARE_DOWNLOAD
-    
-    # 14. PREPARE DOWNLOAD 完成 -> LOAD PROFILE PACKAGE
+
+    # 14. PREPARE DOWNLOAD 完成 -> LOAD PROFILE PACKAGE（BF21 分块）
     pd_result = ActionResult(
         action_id="esim.prepare-download",
         type="APDU_RESULT",
@@ -283,6 +306,7 @@ def test_complete_flow_direct_mode(test_env):
     )
     result = skill.handle_action_result(ctx, pd_result, session)
     store.save(session, "esim.iot-profile-download")
+    drain_pending_apdus(skill, ctx, store, session)
     assert session.data["state"] == EsimState.WAIT_LOAD_PROFILE_PACKAGE
     
     # 15. LOAD PROFILE PACKAGE 完成 -> POST INSTALL RESET
@@ -307,7 +331,7 @@ def test_complete_flow_direct_mode(test_env):
     store.save(session, "esim.iot-profile-download")
     assert session.data["state"] == EsimState.WAIT_POST_INSTALL_IC1
     
-    # 17. IC1 -> IC2
+    # 17. IC1（打开通道）-> SELECT ISD-R
     ic1_result = ActionResult(
         action_id="esim.post-install-ic1",
         type="APDU_RESULT",
@@ -315,17 +339,6 @@ def test_complete_flow_direct_mode(test_env):
         data={"response": "01", "sw": "9000"}
     )
     result = skill.handle_action_result(ctx, ic1_result, session)
-    store.save(session, "esim.iot-profile-download")
-    assert session.data["state"] == EsimState.WAIT_POST_INSTALL_IC2
-    
-    # 18. IC2 -> SELECT ISD-R
-    ic2_result = ActionResult(
-        action_id="esim.post-install-ic2",
-        type="APDU_RESULT",
-        status=ActionResultStatus.OK,
-        data={"response": "02", "sw": "9000"}
-    )
-    result = skill.handle_action_result(ctx, ic2_result, session)
     store.save(session, "esim.iot-profile-download")
     assert session.data["state"] == EsimState.WAIT_POST_INSTALL_SELECT_ISDR
     
@@ -386,7 +399,7 @@ def test_complete_flow_indirect_mode(test_env):
     # 模拟到达 GET PROFILES INFO 状态
     session.data["state"] = EsimState.WAIT_GET_PROFILES_INFO
     
-    # GET PROFILES INFO -> ADD INITIAL EIM (间接模式)
+    # GET PROFILES INFO -> ENABLE PSMO（eIM 已在下载前配置）
     profiles_result = ActionResult(
         action_id="esim.get-profiles-info",
         type="APDU_RESULT",
@@ -394,18 +407,8 @@ def test_complete_flow_indirect_mode(test_env):
         data=MockCardResponses.GET_PROFILES_INFO_RESPONSE_DISABLED
     )
     result = skill.handle_action_result(ctx, profiles_result, session)
-    assert session.data["state"] == EsimState.WAIT_ADD_INITIAL_EIM
-    
-    # ADD INITIAL EIM -> ENABLE PSMO
-    eim_result = ActionResult(
-        action_id="esim.add-initial-eim",
-        type="APDU_RESULT",
-        status=ActionResultStatus.OK,
-        data=MockCardResponses.ADD_INITIAL_EIM_RESPONSE
-    )
-    result = skill.handle_action_result(ctx, eim_result, session)
     assert session.data["state"] == EsimState.WAIT_ENABLE_PSMO
-    
+
     # ENABLE PSMO -> POST ENABLE RESET
     psmo_result = ActionResult(
         action_id="esim.enable-psmo",
@@ -416,7 +419,7 @@ def test_complete_flow_indirect_mode(test_env):
     result = skill.handle_action_result(ctx, psmo_result, session)
     assert session.data["state"] == EsimState.WAIT_POST_ENABLE_RESET
     
-    # POST ENABLE RESET -> SELECT ISD-R
+    # POST ENABLE RESET -> 重新打开逻辑通道
     post_reset_result = ActionResult(
         action_id="esim.post-enable-reset",
         type="RESET_CARD_RESULT",
@@ -424,6 +427,16 @@ def test_complete_flow_indirect_mode(test_env):
         data={"atr": MockCardResponses.ATR}
     )
     result = skill.handle_action_result(ctx, post_reset_result, session)
+    assert session.data["state"] == EsimState.WAIT_POST_ENABLE_IC
+
+    # 打开通道 -> SELECT ISD-R
+    ic_result = ActionResult(
+        action_id="esim.post-enable-ic",
+        type="APDU_RESULT",
+        status=ActionResultStatus.OK,
+        data={"response": "01", "sw": "9000"}
+    )
+    result = skill.handle_action_result(ctx, ic_result, session)
     assert session.data["state"] == EsimState.WAIT_POST_ENABLE_SELECT_ISDR
     
     # SELECT ISD-R -> VERIFY PROFILE STATE
@@ -466,13 +479,12 @@ def test_apdu_generation():
     # GetProfilesInfo (ES10 命令格式)
     assert ApduBuilder.get_profiles_info() == "80E2910003BF2D00"
 
-    # AddInitialEim
+    # AddInitialEim / LoadEuiccPackage 均为 ES10 命令（INS=E2, P1=91）
     eim_apdu = ApduBuilder.add_initial_eim("BF5700")
-    assert eim_apdu.startswith("80BF5700")
+    assert eim_apdu == "80E2910003BF5700"
 
-    # EnablePSMO
     psmo_apdu = ApduBuilder.enable_psmo("BF5100")
-    assert psmo_apdu.startswith("80BF5100")
+    assert psmo_apdu == "80E2910003BF5100"
 
 
 def test_error_handling(test_env):

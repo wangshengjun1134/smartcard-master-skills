@@ -474,8 +474,8 @@ class TestEsimSkillWithRealCard:
         # 应该能正常初始化并启动
         assert result["status"] in ["CONTINUE", "SUCCESS", "FAILED"]
     
-    def test_full_flow_until_success_or_fail(self):
-        """测试完整流程直到成功或失败"""
+    def test_install_direct_mode(self):
+        """直接模式：完整安装流程（启用由卡策略决定，可能被拒）"""
         result = run_skill_with_real_card(
             skill_input={
                 "operation": "install_and_enable",
@@ -491,8 +491,8 @@ class TestEsimSkillWithRealCard:
             verbose=True
         )
 
-        # 流程应该能正常结束
-        assert result["status"] in ["SUCCESS", "FAILED"]
+        # 安装本身必须成功
+        assert result["status"] == "SUCCESS"
 
     def test_indirect_mode_install_and_enable(self):
         """间接模式：AddInitialEim → 下载 → LoadEuiccPackage(enable)"""
@@ -514,22 +514,27 @@ class TestEsimSkillWithRealCard:
             verbose=True
         )
 
-        assert result["status"] in ["SUCCESS", "FAILED"]
+        assert result["status"] == "SUCCESS"
+        assert result["data"]["profile_state"] == "ENABLED"
+        assert result["data"]["verified"] is True
 
 
 if __name__ == "__main__":
-    # 直接运行时执行完整测试
+    # 直接运行时执行完整测试（间接模式：与参考脚本一致，eIM 负责启用）
     print("=== eSIM IoT Profile Download Skill 连卡测试 ===\n")
 
     result = run_skill_with_real_card(
         skill_input={
             "operation": "install_and_enable",
-            "mode": "direct",
+            "mode": "indirect",
             "eid": "89049032123451234512345678901235",
-            "smdp_address": "test.example.com",
+            "smdp_address": "testsmdpplus1.example.com",
             "matching_id": "ABC12345",
             "iccid": "8929901012345678905F",
             "profile_id": "A0000005591010FFFFFFFF8900001000",
+            "eim_id": "testeim1",
+            "eim_fqdn": "eimfqdn.example.com",
+            "eim_id_type": 3,
             "tac": "00000000"
         },
         max_steps=500,

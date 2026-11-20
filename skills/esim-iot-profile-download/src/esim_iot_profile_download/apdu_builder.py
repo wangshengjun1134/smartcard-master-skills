@@ -575,6 +575,20 @@ class ApduBuilder:
         return f"{cla:02X}{ins:02X}{p1:02X}{p2:02X}{lc:02X}{eim_data}"
 
     @staticmethod
+    def enable_profile(enable_data: str, channel: int = 0) -> str:
+        """ES10c.EnableProfile (BF31)
+
+        ES10c 命令 P1 为 0x90： (80+channel) E2 90 00 Lc [BF31 ...]
+
+        Args:
+            enable_data: 完整的 BF31 TLV（十六进制）
+            channel: 逻辑通道号 (0-3)
+        """
+        cla = 0x80 + (channel & 0x03)
+        lc = len(enable_data) // 2
+        return f"{cla:02X}E29000{lc:02X}{enable_data}"
+
+    @staticmethod
     def enable_psmo(enable_data: str, channel: int = 0) -> str:
         """LoadEuiccPackage (BF51)
 

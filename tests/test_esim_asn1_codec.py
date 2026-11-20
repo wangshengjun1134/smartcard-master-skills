@@ -143,6 +143,23 @@ def test_decode_profiles_info_empty():
     assert result.get("profile_state") is None
 
 
+def test_encode_enable_profile():
+    """测试 ES10c.EnableProfile (BF31) 编码"""
+    from esim_iot_profile_download.asn1_codec import encode_enable_profile
+
+    # ICCID(BCD) 形式
+    bcd = bytes.fromhex("989209012143658709F5")
+    assert encode_enable_profile(bcd).hex().upper() == (
+        "BF3111A00C5A0A989209012143658709F58101FF"
+    )
+
+    # AID 形式
+    aid = bytes.fromhex("A0000005591010FFFFFFFF8900001000")
+    assert encode_enable_profile(aid, use_aid=True).hex().upper() == (
+        "BF3117A0124F10A0000005591010FFFFFFFF89000010008101FF"
+    )
+
+
 def test_decode_profile_installation_result_success():
     """测试 ProfileInstallationResult 解码 - 成功分支 (finalResult = A0)"""
     response = bytes.fromhex(

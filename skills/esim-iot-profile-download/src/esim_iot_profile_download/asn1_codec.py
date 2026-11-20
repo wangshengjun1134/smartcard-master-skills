@@ -951,6 +951,28 @@ def decode_memory_reset_result(response: bytes):
     return None
 
 
+def encode_enable_profile(identifier: bytes, refresh_flag: bool = True, use_aid: bool = False) -> bytes:
+    """编码 ES10c.EnableProfile (BF31)
+
+    EnableProfileRequest ::= [49] SEQUENCE {
+        profileIdentifier [0] CHOICE {         -- A0（CHOICE 需显式标记）
+            isdpAid [15] OctetTo16,            -- 4F <16 字节 AID>
+            iccid   [10] OctetTo16             -- 5A <10 字节 BCD ICCID>
+        },
+        refreshFlag       [1] BOOLEAN          -- 81 FF
+    }
+
+    Args:
+        identifier: AID 字节或 BCD(半字节交换) ICCID 字节
+        refresh_flag: 是否要求 REFRESH
+        use_aid: True 用 isdpAid(4F)，False 用 iccid(5A)
+    """
+    inner = _der_tlv(b'\x4f' if use_aid else b'\x5a', identifier)
+    identifier_field = _der_tlv(b'\xa0', inner)
+    refresh = _der_tlv(b'\x81', b'\xff' if refresh_flag else b'\x00')
+    return _der_tlv(b'\xbf\x31', identifier_field + refresh)
+
+
 def encode_enable_psmo(iccid_bcd: bytes, rollback_flag: bool = False) -> bytes:
     """编码 enable PSMO: [3] SEQUENCE { 5A iccid, [0] rollbackFlag OPTIONAL }"""
     content = _der_tlv(b'\x5a', iccid_bcd)

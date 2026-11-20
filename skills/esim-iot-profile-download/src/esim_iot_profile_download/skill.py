@@ -28,6 +28,7 @@ from .asn1_codec import (
     extract_spki,
     decode_add_initial_eim_response,
     decode_memory_reset_result,
+    encode_enable_profile,
     encode_enable_psmo,
     encode_psmo_list,
     encode_euicc_package_signed,
@@ -439,17 +440,25 @@ class EsimIotProfileDownloadSkill(Skill):
             # 保存响应供后续解析
             response = result.data.get("response", "")
             session.data["profiles_info_response"] = response
+            session.data["profile_state"] = self._parse_profile_state(ctx, response)
 
             # 检查是否需要 eIM 启用
             mode = session.data.get("mode", "indirect")
             if mode == "indirect":
                 return self._do_enable_psmo(ctx, session)
-            else:
-                # 直接模式，验证状态后完成
-                return self._verify_and_complete(ctx, session)
+            # 直接模式：安装后若仍未启用，用 ES10c.EnableProfile 启用（可关闭）
+            if (
+                session.data.get("profile_state") != "ENABLED"
+                and session.data["params"].get("enable_profile", True)
+            ):
+                return self._do_enable_profile(ctx, session)
+            return self._verify_and_complete(ctx, session)
 
         elif current_state == EsimState.WAIT_ADD_INITIAL_EIM:
             return self._check_add_initial_eim_result(ctx, session, result.data.get("response", ""))
+
+        elif current_state == EsimState.WAIT_ENABLE_PROFILE:
+            return self._handle_enable_profile_result(ctx, session, result.data.get("sw", ""))
 
         elif current_state == EsimState.WAIT_ENABLE_PSMO:
             return self._check_euicc_package_result(ctx, session, result.data.get("response", ""))
@@ -470,6 +479,7 @@ class EsimIotProfileDownloadSkill(Skill):
             # 保存响应供最终验证
             response = result.data.get("response", "")
             session.data["profiles_info_response"] = response
+            session.data["profile_state"] = self._parse_profile_state(ctx, response)
             return self._verify_and_complete(ctx, session)
 
         # 未知状态
@@ -769,13 +779,20 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_get_profiles_info(ctx, session)
         elif previous_state == EsimState.WAIT_GET_PROFILES_INFO:
             session.data["profiles_info_response"] = response
+            session.data["profile_state"] = self._parse_profile_state(ctx, response)
             mode = session.data.get("mode", "indirect")
             if mode == "indirect":
                 return self._do_enable_psmo(ctx, session)
-            else:
-                return self._verify_and_complete(ctx, session)
+            if (
+                session.data.get("profile_state") != "ENABLED"
+                and session.data["params"].get("enable_profile", True)
+            ):
+                return self._do_enable_profile(ctx, session)
+            return self._verify_and_complete(ctx, session)
         elif previous_state == EsimState.WAIT_ADD_INITIAL_EIM:
             return self._check_add_initial_eim_result(ctx, session, response)
+        elif previous_state == EsimState.WAIT_ENABLE_PROFILE:
+            return self._handle_enable_profile_result(ctx, session, sw)
         elif previous_state == EsimState.WAIT_ENABLE_PSMO:
             return self._check_euicc_package_result(ctx, session, response)
         elif previous_state == EsimState.WAIT_POST_ENABLE_RESET:
@@ -788,6 +805,7 @@ class EsimIotProfileDownloadSkill(Skill):
             return self._do_verify_profile_state(ctx, session)
         elif previous_state == EsimState.WAIT_VERIFY_PROFILE_STATE:
             session.data["profiles_info_response"] = response
+            session.data["profile_state"] = self._parse_profile_state(ctx, response)
             return self._verify_and_complete(ctx, session)
         else:
             return SkillResult.failed(
@@ -1472,6 +1490,85 @@ class EsimIotProfileDownloadSkill(Skill):
         
         return result
     
+    def _handle_enable_profile_result(self, ctx: SkillContext, session: SkillSession, sw: str) -> SkillResult:
+        """EnableProfile 结果处理：失败则换下一个标识候选，全部失败仅告警"""
+        if sw == "9000":
+            ctx.output.text("EnableProfile 成功")
+            session.data.pop("enable_candidates", None)
+            return self._do_post_enable_reset(ctx, session)
+
+        candidates = session.data.get("enable_candidates", [])
+        if len(candidates) > 1:
+            ctx.output.text(f"EnableProfile 返回 SW={sw}，换下一个标识重试")
+            session.data["enable_candidates"] = candidates[1:]
+            return self._send_enable_profile(ctx, session)
+
+        session.data.pop("enable_candidates", None)
+        session.data["enable_sw"] = sw
+        ctx.output.text(
+            f"警告: EnableProfile 全部标识均失败(SW={sw})。"
+            "该卡可能禁止直连 ES10c 启用，请改用 mode=indirect 由 eIM 启用"
+        )
+        return self._do_post_enable_reset(ctx, session)
+
+    def _parse_profile_state(self, ctx: SkillContext, response_hex: str) -> str:
+        """解析 GetProfilesInfo 响应中的 profileState（9F70）"""
+        if not response_hex:
+            return "UNKNOWN"
+        try:
+            info = decode_profiles_info(bytes.fromhex(response_hex))
+            return info.get("profile_state", "UNKNOWN")
+        except Exception as e:
+            ctx.output.text(f"警告: 无法解析 Profile 状态: {e}")
+            return "UNKNOWN"
+
+    def _do_enable_profile(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """ES10c.EnableProfile (BF31) — 直接模式安装后主动启用"""
+        ctx.output.text("步骤 19: 启用 Profile (ES10c.EnableProfile)")
+        session.data["state"] = EsimState.WAIT_ENABLE_PROFILE
+
+        params = session.data["params"]
+        iccid = params.get("iccid", "")
+        iccid_swapped = self._encode_iccid_bcd(iccid)
+        iccid_raw = iccid if len(iccid) % 2 == 0 else iccid + "F"
+        aid_hex = params.get("profile_aid") or params.get("profile_id", "")
+
+        # 不同 eUICC 对 profileIdentifier 的偏好不同，按顺序尝试
+        candidates = []
+        for label, ident_hex, use_aid in (
+            ("iccid(BCD)", iccid_swapped, False),
+            ("iccid(raw)", iccid_raw, False),
+            ("aid", aid_hex, True),
+        ):
+            if not ident_hex:
+                continue
+            try:
+                data = encode_enable_profile(bytes.fromhex(ident_hex), use_aid=use_aid)
+                candidates.append((label, data.hex().upper()))
+            except (Asn1CodecError, ValueError):
+                continue
+
+        if not candidates:
+            return SkillResult.failed(
+                session.session_id,
+                "PROFILE_IDENTIFIER_MISSING",
+                "缺少 ICCID/AID，无法执行 EnableProfile"
+            )
+
+        session.data["enable_candidates"] = candidates
+        return self._send_enable_profile(ctx, session)
+
+    def _send_enable_profile(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
+        """发送当前候选的 EnableProfile APDU"""
+        candidates = session.data.get("enable_candidates", [])
+        label, data_hex = candidates[0]
+        ctx.output.text(f"EnableProfile 使用标识: {label}")
+
+        channel = session.data.get("channel", 1)
+        apdu = ApduBuilder.enable_profile(data_hex, channel=channel)
+        action = self._build_apdu_action("esim.enable-profile", "启用 Profile", apdu)
+        return SkillResult.continue_with(session.session_id, action)
+
     def _do_post_enable_reset(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """启用后冷复位"""
         ctx.output.text("步骤 20: 启用后冷复位")
@@ -1532,20 +1629,10 @@ class EsimIotProfileDownloadSkill(Skill):
     
     def _verify_and_complete(self, ctx: SkillContext, session: SkillSession) -> SkillResult:
         """验证并完成"""
-        # 解析 GetProfilesInfo 响应，验证 profileState
-        response = session.data.get("profiles_info_response", "")
-        
-        profile_state = "UNKNOWN"
-        verified = False
-        
-        if response:
-            try:
-                response_bytes = bytes.fromhex(response)
-                profiles_info = decode_profiles_info(response_bytes)
-                profile_state = profiles_info.get("profile_state", "UNKNOWN")
-                verified = (profile_state == "ENABLED")
-            except Exception as e:
-                ctx.output.text(f"警告: 无法解析 Profile 状态: {e}")
+        profile_state = session.data.get("profile_state") or self._parse_profile_state(
+            ctx, session.data.get("profiles_info_response", "")
+        )
+        verified = (profile_state == "ENABLED")
         
         if verified:
             ctx.output.info(f"eSIM Profile 下载流程完成，状态: {profile_state}")
@@ -1562,5 +1649,10 @@ class EsimIotProfileDownloadSkill(Skill):
             "profile_state": profile_state,
             "verified": verified,
         }
-        
+
+        # 直连模式尝试过 ES10c.EnableProfile 时，把结果一并返回便于定位
+        if session.data.get("enable_sw"):
+            result_data["enable_sw"] = session.data["enable_sw"]
+            result_data["hint"] = "该卡拒绝直连 ES10c 启用，可用 mode=indirect 由 eIM 启用"
+
         return SkillResult.success(session.session_id, result_data)
